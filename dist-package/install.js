@@ -1,5 +1,5 @@
 // ============================================================================
-// SandTogether — co-op multiplayer mod for Sandustry (macOS + Linux installer)
+// SandustryMP — co-op multiplayer mod for Sandustry (macOS + Linux installer)
 // Runs under plain Node OR under the game's own Electron binary via
 // ELECTRON_RUN_AS_NODE=1 (see install.command / install-linux.sh) —
 // no dependencies either way.
@@ -166,14 +166,14 @@ const r = spawnSync(process.execPath, [path.join(SRC, 'patch.js'), appDir], {
 });
 if (r.status !== 0) fail('patch.js failed (see messages above)');
 
-console.log('\n=== DONE! SandTogether installed. ===');
+console.log('\n=== DONE! SandustryMP installed. ===');
 if (IS_MAC) {
-  console.log('Launch via SandTogether-Launch.command (or Steam; if Steam restores');
+  console.log('Launch via SandustryMP-Launch.command (or Steam; if Steam restores');
   console.log('app.asar the game runs unmodded - the launcher guards against that).');
   console.log('Uninstall: Steam -> Sandustry -> Properties -> Installed Files ->');
   console.log('Verify integrity, then delete Contents/Resources/app.');
 } else {
-  console.log('Launch Sandustry from Steam as usual - the SandTogether panel');
+  console.log('Launch Sandustry from Steam as usual - the SandustryMP panel');
   console.log('appears in the top-right corner. After a GAME update Steam restores');
   console.log('app.asar and the game runs unmodded - just re-run install-linux.sh.');
   console.log('Uninstall: Steam -> Sandustry -> Properties -> Installed Files ->');

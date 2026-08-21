@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================================
-# SandTogether — macOS installer wrapper. Double-click to run.
+# SandustryMP — macOS installer wrapper. Double-click to run.
 # No Node.js required: uses the game's own Electron binary as the runtime.
 # Optional argument: path to Sandustry.app (for non-default Steam libraries).
 # ============================================================================
@@ -28,6 +28,6 @@ if [ -z "${GAME:-}" ] || [ ! -x "$GAME/Contents/MacOS/Sandustry" ]; then
   read -r -p "Press Enter to close"; exit 1
 fi
 
-echo "=== SandTogether installer (macOS) ==="
+echo "=== SandustryMP installer (macOS) ==="
 ELECTRON_RUN_AS_NODE=1 "$GAME/Contents/MacOS/Sandustry" "$DIR/install.js" "$GAME"
 read -r -p "Press Enter to close"

@@ -1,4 +1,4 @@
-# SandTogether — coop mod dla Sandustry (v0.9.39-beta)
+# SandustryMP — coop mod dla Sandustry (v0.9.39-beta)
 
 **Autor: Kamil Padula** · Współtwórcy: **dotNine**, **Knight-HD**, **DwoaC**, **Cr0ss0vr**
 
@@ -11,14 +11,14 @@ zaproszenia Steam (lub LAN), do 4 graczy. Osiągnięcia Steam działają normaln
 1. Miej zainstalowane Sandustry ze Steama (odpal raz normalnie).
 2. Kliknij prawym na `install.bat` → **Uruchom** (albo `install.ps1` → Uruchom
    w PowerShell; jeśli Windows blokuje: `powershell -ExecutionPolicy Bypass -File install.ps1`).
-3. Odpal grę — panel **SandTogether** pojawi się w prawym górnym rogu.
+3. Odpal grę — panel **SandustryMP** pojawi się w prawym górnym rogu.
 
 **macOS** (wkład społeczności — DwoaC, przetestowane na Apple Silicon):
 1. Miej zainstalowane Sandustry ze Steama (odpal raz normalnie).
 2. Kliknij dwa razy `install.command` (albo w Terminalu: `bash install.command`;
    jeśli macOS blokuje: Ustawienia → Prywatność i ochrona → Otwórz mimo to).
    Bez zależności — instalator używa silnika samej gry.
-3. Odpalaj grę przez `SandTogether-Launch.command` (sam doinstaluje moda,
+3. Odpalaj grę przez `SandustryMP-Launch.command` (sam doinstaluje moda,
    gdyby update Steama go cofnął) albo normalnie ze Steama.
    LAN co-op w pełni zweryfikowany; zaproszenia Steam dostały fix w 0.9.41.
 
@@ -27,7 +27,7 @@ zaproszenia Steam (lub LAN), do 4 graczy. Osiągnięcia Steam działają normaln
 2. W terminalu: `bash install-linux.sh` (jeśli nie znajdzie gry, podaj folder:
    `bash install-linux.sh /sciezka/do/steamapps/common/Sandustry`).
    Bez zależności — instalator używa silnika samej gry.
-3. Odpal grę ze Steama — panel SandTogether w prawym górnym rogu. Jeśli
+3. Odpal grę ze Steama — panel SandustryMP w prawym górnym rogu. Jeśli
    update GRY ze Steama cofnie moda, odpal ponownie `install-linux.sh`
    (aktualizacje samego moda dalej są automatyczne).
 
@@ -79,4 +79,4 @@ Steam → Sandustry → Właściwości → Zainstalowane pliki → Sprawdź spó
 potem usuń folder `resources\app`.
 
 ---
-SandTogether — **Kamil Padula** · kod źródłowy: https://github.com/IronBamBam1990/sandtogether (MIT)
+SandustryMP — **Kamil Padula** · kod źródłowy: https://github.com/IronBamBam1990/sandustrymp (MIT)

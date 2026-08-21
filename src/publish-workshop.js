@@ -1,5 +1,5 @@
 // ============================================================================
-// SandTogether — co-op multiplayer mod for Sandustry
+// SandustryMP — co-op multiplayer mod for Sandustry
 // Author / Autor: KAMIL PADULA
 // Steam Workshop publisher. Creates/updates the Workshop item as PRIVATE so the
 // author can review the page before making it public.
@@ -13,8 +13,8 @@ const GAME_SW = 'F:/SteamLibrary/steamapps/common/Sandustry/resources/app/node_m
 const CONTENT = path.resolve(__dirname, '../workshop/content');
 const PREVIEW = path.resolve(__dirname, '../workshop/preview.png');
 
-const TITLE = 'SandTogether — Co-op Multiplayer';
-const DESCRIPTION = `[h1]SandTogether — Co-op Multiplayer for Sandustry[/h1]
+const TITLE = 'SandustryMP — Co-op Multiplayer';
+const DESCRIPTION = `[h1]SandustryMP — Co-op Multiplayer for Sandustry[/h1]
 [b]Author: Kamil Padula[/b] — [b]Contributors: dotNine, Knight-HD, DwoaC, Cr0ss0vr, TCentraL, AlyxiaFox, NanYu_sad.[/b]
 
 Play Sandustry together over the internet — no server, no port forwarding. Connect through Steam friend invites. Up to 4 players.
@@ -23,13 +23,13 @@ Play Sandustry together over the internet — no server, no port forwarding. Con
 Sandustry cannot auto-load this kind of mod yet, so after subscribing you run the installer [b]once[/b] — after that the mod [b]updates itself automatically[/b] at every game launch:
 [olist]
 [*] Subscribe (you already did) and let Steam finish downloading.
-[*] Open the mod folder. In Steam: right-click Sandustry → Manage → Browse local files, go up one level, then open: steamapps\\workshop\\content\\2764460\\3784750764\\  (or just search your PC for "SandTogether")
-[*] [b]Windows:[/b] right-click [b]install.bat[/b] → Run. [b]macOS:[/b] double-click [b]install.command[/b] (or run it in Terminal; no dependencies — it uses the game's own engine), then launch via [b]SandTogether-Launch.command[/b] or Steam. [b]Linux (experimental):[/b] in a terminal run [b]bash install-linux.sh[/b]. The installer finds your game and installs the mod automatically.
-[*] Launch Sandustry from Steam. A [b]SandTogether[/b] panel appears in the top-right corner.
+[*] Open the mod folder. In Steam: right-click Sandustry → Manage → Browse local files, go up one level, then open: steamapps\\workshop\\content\\2764460\\3784750764\\  (or just search your PC for "SandustryMP")
+[*] [b]Windows:[/b] right-click [b]install.bat[/b] → Run. [b]macOS:[/b] double-click [b]install.command[/b] (or run it in Terminal; no dependencies — it uses the game's own engine), then launch via [b]SandustryMP-Launch.command[/b] or Steam. [b]Linux (experimental):[/b] in a terminal run [b]bash install-linux.sh[/b]. The installer finds your game and installs the mod automatically.
+[*] Launch Sandustry from Steam. A [b]SandustryMP[/b] panel appears in the top-right corner.
 [/olist]
 That's it — [b]forever[/b]. From v0.9.39 the mod checks the Workshop folder at every launch and installs newer versions by itself (the game restarts once when it does). Both players are always on the same version automatically.
 
-[b]Po polsku:[/b] Po zasubskrybowaniu wejdź do folderu moda (Steam → prawy na Sandustry → Zarządzaj → Przeglądaj pliki lokalne → folder wyżej → steamapps\\workshop\\content\\2764460\\3784750764\\), kliknij prawym [b]install.bat[/b] → Uruchom — [b]tylko RAZ[/b]. Od wersji 0.9.39 mod aktualizuje się sam przy każdym starcie gry (gra raz się zrestartuje przy aktualizacji). Odpal grę — panel SandTogether jest w prawym górnym rogu. Pełna instrukcja: INSTRUKCJA.md.
+[b]Po polsku:[/b] Po zasubskrybowaniu wejdź do folderu moda (Steam → prawy na Sandustry → Zarządzaj → Przeglądaj pliki lokalne → folder wyżej → steamapps\\workshop\\content\\2764460\\3784750764\\), kliknij prawym [b]install.bat[/b] → Uruchom — [b]tylko RAZ[/b]. Od wersji 0.9.39 mod aktualizuje się sam przy każdym starcie gry (gra raz się zrestartuje przy aktualizacji). Odpal grę — panel SandustryMP jest w prawym górnym rogu. Pełna instrukcja: INSTRUKCJA.md.
 
 [h2]Features (v0.9.39 — full co-op)[/h2]
 [list]
@@ -57,7 +57,7 @@ That's it — [b]forever[/b]. From v0.9.39 the mod checks the Workshop folder at
 [/olist]
 Both players must run the same mod version (the panel warns in red if they differ).
 
-[h2]Controls (the SandTogether panel)[/h2]
+[h2]Controls (the SandustryMP panel)[/h2]
 [list]
 [*] [b]Hide / show panel:[/b] click the panel header, or press [b]Ctrl+Shift+H[/b]. (It no longer uses F9 — that's the game's quick-load key.)
 [*] [b]Host (Steam) / Invite:[/b] start a Steam co-op session and invite a friend.
@@ -76,7 +76,7 @@ Huge thanks to the code contributors: [b]dotNine[/b] (player models, world auto-
 And to the testers whose precise bug reports shaped almost every release: [b]TCentraL[/b], [b]Warlow[/b], [b]derErste67[/b], [b]NanYu_sad.[/b], [b]ЗаКеЛьМан[/b], [b]星灵[/b], [b]Lofar666[/b], [b]Bobulator333[/b], [b]thatsmaik[/b], [b]uolkx[/b], [b]MIXUIL[/b], [b]Justin[/b], [b]Hooye!![/b], [b]tony.s.jennette[/b], [b]Sprut[/b] — and everyone else who reported, tested and played. A short description + your log file (%APPDATA%\\Sandustry\\logs\\main.log) is the fastest route to a fix.
 
 [h2]Open source / Contributing[/h2]
-The full source code is on GitHub: [url=https://github.com/IronBamBam1990/sandtogether]github.com/IronBamBam1990/sandtogether[/url] — MIT license. Bug fixes, features and ports (e.g. a macOS installer — the mod code itself is cross-platform) are welcome as pull requests. The README covers the architecture and dev workflow.
+The full source code is on GitHub: [url=https://github.com/IronBamBam1990/sandustrymp]github.com/IronBamBam1990/sandustrymp[/url] — MIT license. Bug fixes, features and ports (e.g. a macOS installer — the mod code itself is cross-platform) are welcome as pull requests. The README covers the architecture and dev workflow.
 
 [i]Polska wersja instrukcji w pliku INSTRUKCJA.md. Active development — feedback welcome![/i]`;
 

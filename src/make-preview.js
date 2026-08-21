@@ -1,4 +1,4 @@
-// SandTogether by Kamil Padula — generates the Workshop preview PNG (512x512)
+// SandustryMP by Kamil Padula — generates the Workshop preview PNG (512x512)
 // Pure Node: manual PNG encoding via zlib. Placeholder art — replace with a
 // real screenshot for a nicer Workshop page.
 'use strict';

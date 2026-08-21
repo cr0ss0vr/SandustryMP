@@ -1,4 +1,4 @@
-// SandTogether by Kamil Padula — Workshop item state check
+// SandustryMP by Kamil Padula — Workshop item state check
 'use strict';
 const sw = require('F:/SteamLibrary/steamapps/common/Sandustry/resources/app/node_modules/steamworks.js');
 const c = sw.init(2764460);

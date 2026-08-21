@@ -1,8 +1,8 @@
-# SandTogether — co-op multiplayer mod for Sandustry (v0.9.39-beta)
+# SandustryMP — co-op multiplayer mod for Sandustry (v0.9.39-beta)
 
 **Author: Kamil Padula** · Contributors: **dotNine**, **Knight-HD**, **DwoaC**, **Cr0ss0vr**, **TCentraL**
 
-SandTogether adds full co-op multiplayer to Sandustry — one shared live world over
+SandustryMP adds full co-op multiplayer to Sandustry — one shared live world over
 Steam friend invites (or LAN), up to 4 players. Steam achievements keep working.
 
 Polska instrukcja: zobacz `INSTRUKCJA.md`.
@@ -14,7 +14,7 @@ Polska instrukcja: zobacz `INSTRUKCJA.md`.
 1. Have Sandustry installed from Steam (launch it once normally).
 2. Right-click `install.bat` → **Run** (or `install.ps1` → Run with PowerShell;
    if Windows blocks it: `powershell -ExecutionPolicy Bypass -File install.ps1`).
-3. Launch the game — the **SandTogether** panel appears in the top-right corner.
+3. Launch the game — the **SandustryMP** panel appears in the top-right corner.
 
 ### macOS (community-contributed by DwoaC, tested on Apple Silicon)
 
@@ -22,7 +22,7 @@ Polska instrukcja: zobacz `INSTRUKCJA.md`.
 2. Double-click `install.command` (or run it in Terminal; pass the path to
    `Sandustry.app` as an argument if your Steam library is somewhere unusual).
    No Node.js needed — it runs on the game's own Electron runtime.
-3. Launch the game with `SandTogether-Launch.command` — it re-installs the mod
+3. Launch the game with `SandustryMP-Launch.command` — it re-installs the mod
    automatically if a Steam update reverted it, then starts the game through
    Steam.
 
@@ -39,7 +39,7 @@ Polska instrukcja: zobacz `INSTRUKCJA.md`.
    if it is not found automatically:
    `bash install-linux.sh /path/to/steamapps/common/Sandustry`).
    No Node.js needed — it runs on the game's own Electron runtime.
-3. Launch the game from Steam — the **SandTogether** panel appears in the
+3. Launch the game from Steam — the **SandustryMP** panel appears in the
    top-right corner. If a **game** update from Steam reverts the mod, just
    re-run `install-linux.sh` (mod updates are still automatic).
 
@@ -90,7 +90,7 @@ Don't rely on saving the game while connected as a client — your save captures
 the world from the moment you joined. The host's save is the authoritative one.
 
 After a **Steam game update** the mod may be reverted — just launch the game:
-the auto-updater re-installs it (macOS: or launch via `SandTogether-Launch.command`).
+the auto-updater re-installs it (macOS: or launch via `SandustryMP-Launch.command`).
 
 ## Uninstall
 
@@ -99,4 +99,4 @@ then delete the `resources\app` folder
 (macOS: `Sandustry.app/Contents/Resources/app`).
 
 ---
-SandTogether by **Kamil Padula** · source: https://github.com/IronBamBam1990/sandtogether (MIT)
+SandustryMP by **Kamil Padula** · source: https://github.com/IronBamBam1990/sandustrymp (MIT)

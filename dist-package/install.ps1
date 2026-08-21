@@ -1,13 +1,13 @@
 # ============================================================
-# SandTogether - co-op multiplayer mod for Sandustry
-# Author / Autor: KAMIL PADULA
+# SandustryMP - co-op multiplayer mod for Sandustry
+# Author: Cr0ss0vr
 # Self-contained installer: no Node.js, no internet required.
 # Run install.bat (recommended) or right-click -> Run with PowerShell
 # ============================================================
 
 $ErrorActionPreference = "Stop"
 Write-Host ""
-Write-Host "=== SandTogether installer (by Kamil Padula) ===" -ForegroundColor Yellow
+Write-Host "=== SandustryMP installer (by Cr0ss0vr) ===" -ForegroundColor Yellow
 Write-Host ""
 
 function Fail($msg) {
@@ -113,27 +113,39 @@ try {
 } catch {}
 
 # --- 5. Copy mod files ------------------------------------------------------
-Copy-Item "$PSScriptRoot\src\sandtogether.js" "$res\app\dist\js\sandtogether.js" -Force
-Copy-Item "$PSScriptRoot\src\st-main.js" "$res\app\st-main.js" -Force
+$rendererFiles = @(
+    "localisation.js",
+    "state.js",
+    "network.js",
+    "menu.js",
+    "sandustrymp.js"
+)
+foreach ($rendererFile in $rendererFiles) {
+    Copy-Item "$PSScriptRoot\src\$rendererFile" "$res\app\dist\js\$rendererFile" -Force
+}
+Copy-Item "$PSScriptRoot\src\smp-main.js" "$res\app\smp-main.js" -Force
 Write-Host "[+] mod files copied"
 
 # --- 6. index.html ----------------------------------------------------------
 $p = "$res\app\dist\index.html"
 $s = [System.IO.File]::ReadAllText($p)
-if ($s.Contains("js/sandtogether.js")) { Write-Host "[=] index.html (already patched)" }
-else {
-    $s = $s.Replace('<script type="module" src="js/bundle.js"></script>', "<script src=""js/sandtogether.js""></script>`n    <script type=""module"" src=""js/bundle.js""></script>")
-    if (-not $s.Contains("js/sandtogether.js")) { Fail "index.html anchor not found" }
-    [System.IO.File]::WriteAllText($p, $s)
-    Write-Host "[+] index.html"
+$bundleTag = '<script type="module" src="js/bundle.js"></script>'
+if (-not $s.Contains($bundleTag)) { Fail "index.html anchor not found" }
+foreach ($rendererFile in $rendererFiles) {
+    $escapedFile = [Regex]::Escape($rendererFile)
+    $s = [Regex]::Replace($s, "(?m)^\s*<script src=[`"']js/$escapedFile[`"']></script>\s*\r?\n?", "")
 }
+$rendererTags = ($rendererFiles | ForEach-Object { "    <script src=""js/$_""></script>" }) -join "`r`n"
+$s = $s.Replace($bundleTag, "$rendererTags`r`n    $bundleTag")
+[System.IO.File]::WriteAllText($p, $s)
+Write-Host "[+] index.html"
 
 # --- 7. preload.js ----------------------------------------------------------
 $p = "$res\app\preload.js"
 $s = [System.IO.File]::ReadAllText($p)
-if ($s.Contains("sandtogetherNet")) { Write-Host "[=] preload.js (already patched)" }
+if ($s.Contains("sandustrympNet")) { Write-Host "[=] preload.js (already patched)" }
 else {
-    $s += "`n" + [System.IO.File]::ReadAllText("$PSScriptRoot\src\st-preload-append.js")
+    $s += "`n" + [System.IO.File]::ReadAllText("$PSScriptRoot\src\smp-preload-append.js")
     [System.IO.File]::WriteAllText($p, $s)
     Write-Host "[+] preload.js"
 }
@@ -141,22 +153,22 @@ else {
 # --- 8. main.js -------------------------------------------------------------
 $p = "$res\app\main.js"
 $s = [System.IO.File]::ReadAllText($p)
-$MARK_A = "// --- SandTogether init ---"
-$MARK_B = "// --- /SandTogether init ---"
+$MARK_A = "// --- SandustryMP init ---"
+$MARK_B = "// --- /SandustryMP init ---"
 $block = @"
 
 
 $MARK_A
 try {
-  const _stUd = process.argv.find((a) => a.startsWith('--st-userdata='));
-  if (_stUd) { app.setPath('userData', _stUd.split('=')[1]); console.log('[SandTogether] userData override:', _stUd.split('=')[1]); }
-} catch (e) { console.error('[SandTogether] userdata error:', e); }
+  const userDataArgument = process.argv.find((argument) => argument.startsWith('--smp-userdata='));
+  if (userDataArgument) { app.setPath('userData', userDataArgument.split('=')[1]); console.log('[SandustryMP] userData override:', userDataArgument.split('=')[1]); }
+} catch (e) { console.error('[SandustryMP] userdata error:', e); }
 try {
   app.whenReady().then(() => {
-    try { require('./st-main.js').init({ getMainWindow: () => mainWindow }); }
-    catch (e) { console.error('[SandTogether] init error:', e); }
+    try { require('./smp-main.js').init({ getMainWindow: () => mainWindow }); }
+    catch (e) { console.error('[SandustryMP] init error:', e); }
   });
-} catch (e) { console.error('[SandTogether] bootstrap error:', e); }
+} catch (e) { console.error('[SandustryMP] bootstrap error:', e); }
 $MARK_B
 "@
 $ia = $s.IndexOf($MARK_A)
@@ -199,9 +211,25 @@ if ($criticalFail) {
 }
 if ($featureMiss -gt 0) { Write-Host "Note: $featureMiss optional feature(s) not available on this game build, but co-op will work." -ForegroundColor Yellow }
 
+# --- 10. simulation-worker.js deterministic RNG bootstrap ------------------
+$p = "$res\app\dist\js\simulation-worker.js"
+if (-not (Test-Path -LiteralPath $p)) { Fail "simulation-worker.js not found" }
+$worker = [System.IO.File]::ReadAllText($p)
+$markA = "// --- SandustryMP deterministic simulation RNG ---"
+$markB = "// --- /SandustryMP deterministic simulation RNG ---"
+$start = $worker.IndexOf($markA, [System.StringComparison]::Ordinal)
+if ($start -ge 0) {
+    $end = $worker.IndexOf($markB, $start, [System.StringComparison]::Ordinal)
+    if ($end -lt 0) { Fail "simulation-worker.js has an incomplete SandustryMP RNG block" }
+    $worker = ($worker.Substring(0, $start) + $worker.Substring($end + $markB.Length)).TrimStart()
+}
+$bootstrap = [System.IO.File]::ReadAllText("$PSScriptRoot\src\sim-worker-bootstrap.js").TrimEnd()
+[System.IO.File]::WriteAllText($p, $bootstrap + "`n" + $worker)
+Write-Host "[+] simulation-worker.js deterministic RNG bootstrap"
+
 Write-Host ""
-Write-Host "=== DONE! SandTogether installed. ===" -ForegroundColor Green
-Write-Host "Launch Sandustry from Steam. The SandTogether panel appears top-right (click its header or Ctrl+Shift+H to hide)."
-Write-Host "TIP: if Steam keeps updating the game and reverting the mod, set Steam -> Sandustry -> Properties -> Updates -> 'Only update on launch', and launch via SandTogether-START.bat."
+Write-Host "=== DONE! SandustryMP installed. ===" -ForegroundColor Green
+Write-Host "Launch Sandustry from Steam. The SandustryMP panel appears top-right (click its header or Ctrl+Shift+H to hide)."
+Write-Host "TIP: if Steam keeps updating the game and reverting the mod, set Steam -> Sandustry -> Properties -> Updates -> 'Only update on launch', and launch via SandustryMP-START.bat."
 Write-Host "Uninstall: Steam -> Sandustry -> Properties -> Installed Files -> Verify integrity, then delete resources\app."
 if ($Host.Name -eq "ConsoleHost") { Read-Host "Press Enter to close" }
