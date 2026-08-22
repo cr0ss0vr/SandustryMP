@@ -16,7 +16,7 @@
 			window.electron && window.electron.log && window.electron.log("info", "SandustryMP:game", line);
 		} catch (e) {}
 	};
-	const VER = "v0.1.6";
+	const VER = "v0.1.7";
 	const AUTHOR = "Cr0ss0vr";
 	const CONTRIBUTORS = "";
 	const VACUUM_CAPS = [500, 1000, 1500, 2000, 2500, 3000]; // capacity table from the game code (module 6420)
@@ -367,6 +367,8 @@
 			if (sandustryMP.net.role === "client" && sandustryMP._baseWorldReady) applyResources(msg);
 		} else if (msg.t === "tech") {
 			if (sandustryMP.net.role === "client" && sandustryMP._baseWorldReady && sandustryMP.state && msg.id) applySyncedTechUnlock(sandustryMP.state, msg.id);
+		} else if (msg.t === "tier") {
+			if (sandustryMP.net.role === "client" && sandustryMP._baseWorldReady && sandustryMP.state) applySyncedFactoryTier(sandustryMP.state, msg.level);
 		} else if (msg.t === "resDelta") {
 			if (sandustryMP.net.role === "host") applyResourceDelta(msg);
 		} else if (msg.t === "ent") {
@@ -1059,7 +1061,8 @@
 				if (key) initiallyAppliedTech.add(key);
 			}
 			sandustryMP.gameApi.events.on(state, "tech:unlocked", (st, data) => {
-				if (!data || !data.techId) return;
+				if (!data || data.techId == null) return;
+				persistResearchLedger(state);
 				const key = canonicalTechKey(data.techId);
 				if (!key) return;
 				if (!sandustryMP._applyingNet) techSideEffectsFor(state).add(key);
@@ -1070,6 +1073,17 @@
 				} else if (sandustryMP.net.role === "host") {
 					net.send({ t: "tech", id: data.techId });
 					log("HOST tech → all clients", data.techId);
+				}
+			});
+			sandustryMP.gameApi.events.on(state, "store:save", () => persistResearchLedger(state));
+			sandustryMP.gameApi.events.on(state, "factory:levelUp", (st, data) => {
+				if (sandustryMP._applyingNet || !sandustryMP.wsx.paused || !data || !Number.isInteger(data.newLevel)) return;
+				if (sandustryMP.net.role === "client") {
+					net.send({ t: "act", k: "tier" });
+					log("CLIENT factory tier unlock requested; local level", data.newLevel);
+				} else if (sandustryMP.net.role === "host") {
+					net.send({ t: "tier", level: data.newLevel });
+					log("HOST factory tier unlocked ->", data.newLevel);
 				}
 			});
 			// Story progression (fix G6): a step triggered by a client item or action initially mutates only local storage.
@@ -1323,6 +1337,8 @@
 				fp: fpCounters(state),                  // factory process counters (ShakeWetSand etc.) - SAB non-mirror
 				up: state.store.upgrades || null,       // Shared upgrade pool (fix G2)
 				th: (state.store.player && state.store.player.tech) || null, // tech tree
+				bu: (state.store.player && state.store.player.buildings) || null,
+				vl: sandustryMP.gameApi.factory && sandustryMP.gameApi.factory.getLevel ? sandustryMP.gameApi.factory.getLevel(state) : null,
 				pg: state.store.progression || null,    // progression (upgradesUnlocked, dungeons)
 			});
 		} catch (e) {}
@@ -1359,7 +1375,17 @@
 			const tm = sandustryMP._techMod;
 			if (tm && tm.unlockTech && tm.getTechDefinition) {
 				const def = tm.getTechDefinition(techId);
-				if (def) return tm.unlockTech(state, def, { suppressMusic: true }) !== false;
+				if (def) {
+					const unlocked = tm.unlockTech(state, def, { suppressMusic: true }) !== false;
+					// Native unlockTech performs validation and side effects. Commit the
+					// definition's canonical ID explicitly after success because remote calls
+					// do not run through the research screen's local completion callback.
+					if (unlocked && state.store.player && state.store.player.tech) {
+						state.store.player.tech[def.id] = true;
+						state.store.player.tech[techId] = true;
+					}
+					return unlocked;
+				}
 			}
 		} catch (e) { log("techUnlock error:", techId, e.message); }
 		finally {
@@ -1380,30 +1406,104 @@
 		const key = String(techId).trim();
 		return key && key !== "undefined" && key !== "null" ? key : "";
 	}
+	function researchLedger(state) {
+		try {
+			const storageApi = sandustryMP.gameApi && sandustryMP.gameApi.storage;
+			return storageApi && typeof storageApi.ensure === "function" ? storageApi.ensure(state, "sandustryMPResearch") : null;
+		} catch (e) { return null; }
+	}
+	function persistResearchLedger(state) {
+		try {
+			const player = state && state.store && state.store.player;
+			const ledger = player && player.tech && researchLedger(state);
+			if (!ledger) return;
+			ledger.unlockedTechnologyIds = Object.keys(player.tech).filter((techId) => player.tech[techId] === true);
+			ledger.version = 1;
+		} catch (e) { log("RESEARCH LEDGER save error:", e.message); }
+	}
+	function restoreResearchLedger(state) {
+		try {
+			const player = state && state.store && state.store.player;
+			const ledger = player && player.tech && researchLedger(state);
+			if (!ledger || !Array.isArray(ledger.unlockedTechnologyIds)) return 0;
+			let restored = 0;
+			for (const techId of ledger.unlockedTechnologyIds) {
+				if (techId == null || player.tech[techId] === true) continue;
+				player.tech[techId] = true;
+				restored++;
+			}
+			if (restored) log("RESEARCH LEDGER: restored", restored, "technology flags from the save ledger");
+			return restored;
+		} catch (e) { log("RESEARCH LEDGER load error:", e.message); return 0; }
+	}
 	function repairUnlockedResearch(state) {
 		try {
 			const techModule = sandustryMP._techMod;
 			const player = state && state.store && state.store.player;
 			if (!techModule || !techModule.unlockTech || !techModule.getTechDefinition || !player || !player.tech) return;
+			restoreResearchLedger(state);
 			const inventory = Array.isArray(player.inventory) ? player.inventory : (player.inventory = []);
 			const ownedItemIds = new Set(inventory.map((item) => item && (item.id != null ? item.id : item.typeId)).filter((id) => id != null).map(String));
 			const buildings = Array.isArray(player.buildings) ? player.buildings : (player.buildings = []);
+			const technologyNodes = typeof techModule.getTechNodes === "function" ? techModule.getTechNodes() : [];
+			const unlockedStructureIds = new Set();
+			const lockedStructureIds = new Set();
+			const unlockedItemIds = new Set();
+			const lockedItemIds = new Set();
 			let mapTechnologyKnown = false;
 			let mapTechnologyUnlocked = false;
-			for (const techId of Object.keys(player.tech)) {
-				const definition = techModule.getTechDefinition(techId);
-				if (definition && definition.unlocks && definition.unlocks.map) {
-					mapTechnologyKnown = true;
-					if (player.tech[techId]) mapTechnologyUnlocked = true;
+			let heatmapTechnologyUnlocked = false;
+			for (const definition of technologyNodes) {
+				if (!definition || definition.id == null || !definition.unlocks) continue;
+				const techId = definition.id;
+				const unlocked = player.tech[techId] === true;
+				// Shaker is a starting building in normal saves even though the tutorial uses
+				// a technology node for progression. Foundation and Collector are not present
+				// in any unlock list, so they naturally remain untouched as well.
+				const preserveStartingShaker = definition.descriptionKey === "tech|shaker|description";
+				for (const structureId of definition.unlocks.structures || []) {
+					const key = String(structureId);
+					if (unlocked || preserveStartingShaker) unlockedStructureIds.add(key); else lockedStructureIds.add(key);
 				}
+				for (const itemId of definition.unlocks.items || []) {
+					const key = String(itemId);
+					if (unlocked) unlockedItemIds.add(key); else lockedItemIds.add(key);
+				}
+				if (definition.unlocks.map) {
+					mapTechnologyKnown = true;
+					if (unlocked) mapTechnologyUnlocked = true;
+				}
+				if (definition.descriptionKey === "tech|heatmap|description" && unlocked) heatmapTechnologyUnlocked = true;
 			}
+			const structuresToRemove = new Set([...lockedStructureIds].filter((id) => !unlockedStructureIds.has(id)));
+			const itemsToRemove = new Set([...lockedItemIds].filter((id) => !unlockedItemIds.has(id)));
+			let removedBuildings = 0;
+			for (let index = buildings.length - 1; index >= 0; index--) {
+				if (structuresToRemove.has(String(buildings[index]))) { buildings.splice(index, 1); removedBuildings++; }
+			}
+			let removedItems = 0;
+			for (let index = inventory.length - 1; index >= 0; index--) {
+				const item = inventory[index];
+				const itemId = item && (item.id != null ? item.id : item.typeId);
+				if (itemId != null && itemsToRemove.has(String(itemId))) { inventory.splice(index, 1); removedItems++; }
+			}
+			// Hotbars are player configuration, not an unlock registry. Never rewrite
+			// them during load repair: a structure can be removed and restored later in
+			// this same pass, but a cleared slot cannot be reconstructed reliably.
+			if (removedBuildings || removedItems) log("RESEARCH REPAIR: removed locked unlocks:", removedBuildings, "buildings and", removedItems, "items");
 			// `map.revealed` can remain true in saves affected by an earlier sync bug.
 			// The map module caches that value during initialization, so repair both its
 			// live state and persistent storage before restoring positive unlock effects.
 			if (mapTechnologyKnown && sandustryMP._mapMod && typeof sandustryMP._mapMod.setRevealed === "function") {
 				sandustryMP._mapMod.setRevealed(state, mapTechnologyUnlocked);
-				if (!mapTechnologyUnlocked) log("RESEARCH REPAIR: locked the map because its technology is not researched");
+				let storedMapState = null;
+				try { storedMapState = sandustryMP.gameApi.storage.ensure(state, "map"); } catch (e) {}
+				log("RESEARCH REPAIR: map technology is", mapTechnologyUnlocked ? "unlocked" : "locked", "-> map revealed=" + !!(storedMapState && storedMapState.revealed));
+			} else if (!sandustryMP._mapRepairWarningLogged) {
+				sandustryMP._mapRepairWarningLogged = true;
+				log("RESEARCH REPAIR: map state could not be reconciled; definition=" + mapTechnologyKnown, "nativeSetter=" + !!(sandustryMP._mapMod && sandustryMP._mapMod.setRevealed));
 			}
+			if (sandustryMP._mapMod && typeof sandustryMP._mapMod.setHeatmapUnlocked === "function") sandustryMP._mapMod.setHeatmapUnlocked(state, heatmapTechnologyUnlocked);
 			let repairedTechnologies = 0;
 			const previousApplyingNet = sandustryMP._applyingNet;
 			sandustryMP._applyingNet = true;
@@ -1438,6 +1538,45 @@
 			if (repairedTechnologies) log("RESEARCH REPAIR: restored unlock side effects for", repairedTechnologies, "technologies");
 		} catch (e) { log("RESEARCH REPAIR error:", e.message); }
 	}
+	function structureUnlockFamily(structureType) {
+		if (structureType == null) return "";
+		if (typeof structureType === "number") {
+			if (structureType === 1 || structureType === 2) return "native:conveyor";
+			if (structureType === 3 || structureType === 4) return "native:shaker";
+			if (structureType >= 5 && structureType <= 7) return "native:launcher";
+			if (structureType === 17 || structureType === 18) return "native:filter";
+			return "native:" + structureType;
+		}
+		return "named:" + String(structureType).replace(/(left|right|up|down)$/i, "").toLowerCase();
+	}
+	function technologyControlledStructureFamilies() {
+		const families = new Set();
+		const techModule = sandustryMP._techMod;
+		const nodes = techModule && typeof techModule.getTechNodes === "function" ? techModule.getTechNodes() : [];
+		for (const definition of nodes) for (const structureType of (definition && definition.unlocks && definition.unlocks.structures) || []) families.add(structureUnlockFamily(structureType));
+		return families;
+	}
+	function canHostPlaceStructure(state, structureType) {
+		const requestedFamily = structureUnlockFamily(structureType);
+		if (!requestedFamily || !technologyControlledStructureFamilies().has(requestedFamily)) return true;
+		const unlockedBuildings = state.store.player && state.store.player.buildings;
+		return Array.isArray(unlockedBuildings) && unlockedBuildings.some((buildingType) => structureUnlockFamily(buildingType) === requestedFamily);
+	}
+	function reconcileClientBuildingHotbar(state, hostBuildings) {
+		if (!state || sandustryMP.net.role !== "client" || !Array.isArray(hostBuildings)) return;
+		const hotbar = state.store.player && state.store.player.hotbar;
+		if (!hotbar || !Array.isArray(hotbar.bars)) return;
+		const controlledFamilies = technologyControlledStructureFamilies();
+		const hostFamilies = new Set(hostBuildings.map(structureUnlockFamily));
+		let removedSlots = 0;
+		for (const bar of hotbar.bars) if (Array.isArray(bar)) for (let slotIndex = 0; slotIndex < bar.length; slotIndex++) {
+			const entry = bar[slotIndex];
+			const entryId = entry && typeof entry === "object" ? (entry.id != null ? entry.id : entry.typeId) : entry;
+			const family = structureUnlockFamily(entryId);
+			if (family && controlledFamilies.has(family) && !hostFamilies.has(family)) { bar[slotIndex] = null; removedSlots++; }
+		}
+		if (removedSlots) log("CLIENT removed", removedSlots, "hotbar building slots not unlocked by the host");
+	}
 	function applySyncedTechUnlock(state, techId) {
 		const key = canonicalTechKey(techId);
 		if (!state || !key || !state.store.player || !state.store.player.tech) return false;
@@ -1464,6 +1603,32 @@
 		log("SYNC: team tech unlocked:", techId, fullyUnlocked ? "(REAL)" : "(FALLBACK flag - _techMod patch does not match!)");
 		return fullyUnlocked;
 	}
+	function applySyncedFactoryTier(state, confirmedLevel) {
+		const factory = sandustryMP.gameApi && sandustryMP.gameApi.factory;
+		if (!state || !factory || !Number.isInteger(confirmedLevel) || confirmedLevel < 1 || confirmedLevel > 100) return false;
+		let currentLevel = factory.getLevel ? factory.getLevel(state) : (state.store.viability && state.store.viability.level) || 1;
+		if (currentLevel < confirmedLevel && factory.unlockNextTier) {
+			const previousApplyingNet = sandustryMP._applyingNet;
+			sandustryMP._applyingNet = true;
+			try {
+				while (currentLevel < confirmedLevel && (!factory.canUnlockNextTier || factory.canUnlockNextTier(state))) {
+					const before = currentLevel;
+					factory.unlockNextTier(state);
+					currentLevel = factory.getLevel ? factory.getLevel(state) : (state.store.viability && state.store.viability.level) || before;
+					if (currentLevel <= before) break;
+				}
+			} finally { sandustryMP._applyingNet = previousApplyingNet; }
+		}
+		currentLevel = factory.getLevel ? factory.getLevel(state) : (state.store.viability && state.store.viability.level) || 1;
+		// The streamed host level is also the rollback path for an optimistic client
+		// unlock rejected by native validation on the host.
+		if (currentLevel !== confirmedLevel && state.store.viability) state.store.viability.level = confirmedLevel;
+		try {
+			const overlays = sandustryMP.gameApi.ui && sandustryMP.gameApi.ui.overlays;
+			if (overlays && overlays.update) { overlays.update(state, "factoryProgress"); overlays.update(state, "management"); overlays.update(state, "global"); }
+		} catch (e) {}
+		return true;
+	}
 	function fpArr(state) { // raw SAB array (to be written at the customer's)
 		try {
 			const workersApi = sandustryMP.gameApi.workers;
@@ -1472,6 +1637,32 @@
 		} catch (e) { return null; }
 	}
 	function fpCounters(state) { const processingCounters = fpArr(state); return processingCounters ? Array.from(processingCounters) : null; }
+	function updateClientConveyorAnimations(state, hostAnimationIndexes) {
+		if (!state || sandustryMP.net.role !== "client" || !sandustryMP._baseWorldReady) return;
+		const animationIndexes = unwrapTypedArray(state.shared && state.shared.conveyorBeltsAnimationIndex);
+		if (!animationIndexes || animationIndexes.length < 2) return;
+		const now = performance.now();
+		if (sandustryMP._conveyorAnimationState !== state || !sandustryMP._conveyorAnimationStarted) {
+			sandustryMP._conveyorAnimationState = state;
+			sandustryMP._conveyorAnimationStarted = true;
+			sandustryMP._lastConveyorAnimationStep = now;
+			if (hostAnimationIndexes && hostAnimationIndexes.length >= 2) {
+				animationIndexes[0] = hostAnimationIndexes[0] & 3;
+				animationIndexes[1] = hostAnimationIndexes[1] & 3;
+			}
+			return;
+		}
+		// Sandustry's manager alternates left and right conveyor updates every 166 ms,
+		// so each direction advances once every 332 ms. The client's manager is paused;
+		// advance this render-only buffer locally instead of resetting it from a stale
+		// one-second network snapshot. Filters use these same two animation indexes.
+		const elapsed = now - sandustryMP._lastConveyorAnimationStep;
+		const steps = Math.floor(elapsed / 332);
+		if (steps <= 0) return;
+		sandustryMP._lastConveyorAnimationStep += steps * 332;
+		animationIndexes[0] = (animationIndexes[0] + steps) & 3;
+		animationIndexes[1] = (animationIndexes[1] + steps) & 3;
+	}
 	function applyResources(msg) {
 		const state = sandustryMP.state;
 		if (!state) return;
@@ -1482,7 +1673,7 @@
 			if (msg.g !== null && unwrapTypedArray(sharedState.gold)) unwrapTypedArray(sharedState.gold)[0] = msg.g;
 			if (msg.e !== null && unwrapTypedArray(sharedState.energy)) unwrapTypedArray(sharedState.energy)[0] = msg.e;
 			if (msg.p !== null && unwrapTypedArray(sharedState.productionPoints)) unwrapTypedArray(sharedState.productionPoints)[0] = msg.p;
-			if (msg.c && unwrapTypedArray(sharedState.conveyorBeltsAnimationIndex)) { const conveyorAnimationIndexes = unwrapTypedArray(sharedState.conveyorBeltsAnimationIndex); for (let index = 0; index < Math.min(conveyorAnimationIndexes.length, msg.c.length); index++) conveyorAnimationIndexes[index] = msg.c[index]; }
+			if (msg.c) updateClientConveyorAnimations(state, msg.c);
 			if (msg.st) {
 				// `store.mods` contains team story progress and collections, but also per-player preferences.
 				// Fix TCentraL: "client shake only works when the host has Shaking enabled" - switch
@@ -1498,6 +1689,7 @@
 			}
 			if (msg.gl) state.store.gloom = msg.gl;
 			if (msg.fp) { const processingCounters = fpArr(state); if (processingCounters) { const sourceCounters = msg.fp; for (let index = 0; index < Math.min(processingCounters.length, sourceCounters.length); index++) { try { Atomics.store(processingCounters, index, sourceCounters[index]); } catch (e) { processingCounters[index] = sourceCounters[index]; } } } }
+			if (msg.vl != null) applySyncedFactoryTier(state, msg.vl);
 			// Shared upgrades and technology pool (G2): merge levels instead of replacing objects retained by the game.
 			if (msg.up && state.store.upgrades) {
 				for (const it of Object.keys(msg.up)) {
@@ -1517,6 +1709,7 @@
 					applySyncedTechUnlock(state, k);
 				}
 			}
+			if (msg.bu) reconcileClientBuildingHotbar(state, msg.bu);
 			if (msg.pg && state.store.progression) Object.assign(state.store.progression, msg.pg);
 				sandustryMP._resSnapshot = Object.assign({}, state.store.resources); // re-base for customer increments (dotNine)
 		} catch (e) {}
@@ -2087,9 +2280,41 @@
 		} catch (e) { return false; }
 	};
 
+	const HOST_ACTION_KINDS = new Set(["dig", "place", "demolish", "upg", "tech", "tier", "story", "collect", "sig", "sbtn", "paste", "sdata", "aug", "pipeRm", "vac", "grabH", "drone", "proj", "move", "pickup", "grabPick", "grabPlace", "fireB", "shakeB", "volcB", "caulkB", "caulkRmB", "cryoB"]);
+	function finiteCoordinate(value) { return Number.isFinite(value) && Math.abs(value) <= 1000000; }
+	function validCoordinatePair(x, y) { return finiteCoordinate(x) && finiteCoordinate(y); }
+	function validCellBatch(cells, maxCells) {
+		if (!Array.isArray(cells) || cells.length > maxCells * 2 || cells.length % 2 !== 0) return false;
+		for (let index = 0; index < cells.length; index += 2) if (!validCoordinatePair(cells[index], cells[index + 1])) return false;
+		return true;
+	}
+	function validateHostAction(msg, fromId) {
+		if (!msg || typeof msg !== "object" || typeof msg.k !== "string" || !HOST_ACTION_KINDS.has(msg.k)) return false;
+		// Only a currently connected peer can submit gameplay intent. The packet is
+		// still untrusted after this check; every branch must resolve targets from the
+		// host world and call a native game operation.
+		if (!fromId || !sandustryMP.peers || !sandustryMP.peers.has(fromId)) return false;
+		if (["place", "sbtn", "sdata", "grabPick", "grabPlace"].includes(msg.k) && !validCoordinatePair(msg.x, msg.y)) return false;
+		if (["vac", "grabH"].includes(msg.k) && !validCoordinatePair(msg.x, msg.y)) return false;
+		if (["pipeRm", "demolish"].includes(msg.k)) {
+			const rect = msg.k === "demolish" ? msg.rect : msg;
+			if (!rect || ![rect.x0, rect.y0, rect.x1, rect.y1].every(finiteCoordinate) || rect.x1 < rect.x0 || rect.y1 < rect.y0 || (rect.x1 - rect.x0 + 1) * (rect.y1 - rect.y0 + 1) > 40000) return false;
+		}
+		if (["fireB", "shakeB", "volcB", "caulkB", "caulkRmB", "cryoB"].includes(msg.k) && !validCellBatch(msg.c, 1000)) return false;
+		if (["paste", "move"].includes(msg.k)) {
+			const count = msg.k === "paste" ? (Array.isArray(msg.list) ? msg.list.length : -1) : (Array.isArray(msg.from) && Array.isArray(msg.to) ? msg.from.length + msg.to.length : -1);
+			if (count < 0 || count > 1024) return false;
+		}
+		return true;
+	}
+
 	function replayAction(msg, fromId) {
 		const state = sandustryMP.state;
 		if (!state) return;
+		if (!validateHostAction(msg, fromId)) {
+			log("HOST rejected invalid or unsupported client action:", msg && msg.k, "from", fromId);
+			return;
+		}
 		try {
 			if (msg.k === "dig") {
 				const ex = findApi("excavate", ["excavation", "patterns"]); // ns name differs between builds (current=excavation, 0.5.3=patterns)
@@ -2107,21 +2332,15 @@
 				sandustryMP._applyingNet = true;
 				let built = null;
 				let replaced = null;
+				const buildingUnlocked = msg.type != null && canHostPlaceStructure(state, msg.type);
 				try {
-					if (msg.type != null && Number.isFinite(msg.x) && Number.isFinite(msg.y)) {
-						if (msg.replace) {
-							const structuresApi = structNs();
-							const existing = structuresApi && structuresApi.getAtCell(state, msg.x, msg.y);
-							if (existing) {
-								replaced = slimStruct(existing);
-								// This matches Sandustry's native CanBeReplaced branch before build:
-								// remove the old structure and all of its owned terrain cells atomically.
-								structuresApi.removeAt(state, existing.x, existing.y, { removeCells: true, skipWorkerSync: true });
-							}
-						}
+					if (buildingUnlocked && Number.isFinite(msg.x) && Number.isFinite(msg.y)) {
+						// Do not pre-remove an occupied structure. Native build owns clearance and
+						// replacement validation; a failed request must leave the old structure intact.
 						built = buildOne(state, { type: msg.type, x: msg.x, y: msg.y, data: msg.data || undefined, filter: msg.filter || undefined }, false);
 					}
 				} finally { sandustryMP._applyingNet = false; }
+				if (!buildingUnlocked) log("HOST rejected placement of locked building:", msg.type, "from", fromId);
 				if (built) {
 					const inStore = (state.store.structures || []).indexOf(built) >= 0;
 					const structure = slimStruct(built);
@@ -2140,19 +2359,24 @@
 					if (replaced) for (const peerId of sandustryMP.peers.keys()) if (peerId !== fromId) net.send({ t: "st", k: "rm", list: [replaced] }, peerId);
 					if ((sandustryMP._plDiagHE = (sandustryMP._plDiagHE || 0) + 1) <= 300) log("HOST placement result: failure", msg.type, "@", msg.x, msg.y);
 				}
-			} else if (msg.k === "build") {
-				sandustryMP._applyingNet = true;
-				try { for (const s of msg.list) buildOne(state, s); } finally { sandustryMP._applyingNet = false; }
-				net.send({ t: "st", k: "add", list: msg.list }); // confirm to other customers
 			} else if (msg.k === "demolish") {
+				// Never trust the client's structure list. Resolve the requested rectangle
+				// against the host's live structure geometry, exactly as native selection does.
+				const structuresApi = structNs();
+				const hostTargets = new Map();
+				for (let y = Math.floor(msg.rect.y0); y <= Math.ceil(msg.rect.y1); y++) for (let x = Math.floor(msg.rect.x0); x <= Math.ceil(msg.rect.x1); x++) {
+					const structure = structuresApi && structuresApi.getAtCell(state, x, y);
+					if (structure) hostTargets.set(structKey(structure), structure);
+				}
+				const removed = [...hostTargets.values()].map(slimStruct);
 				sandustryMP._applyingNet = true;
-				try { for (const s of msg.list) removeOne(state, s); } finally { sandustryMP._applyingNet = false; }
-				net.send({ t: "st", k: "rm", list: msg.list });
+				try { for (const structure of hostTargets.values()) structuresApi.removeAt(state, structure.x, structure.y, {}); } finally { sandustryMP._applyingNet = false; }
+				if (removed.length) net.send({ t: "st", k: "rm", list: removed });
 				// Fix (DwoaC): orphan-tile cleanup was armed only for host demolition.
 				// The client's demolition left red tiles. Uzbrajamy go bounding-box list (±2).
-				if (msg.list && msg.list.length) {
+				if (removed.length) {
 					let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
-					for (const s of msg.list) { if (s.x < x0) x0 = s.x; if (s.x > x1) x1 = s.x; if (s.y < y0) y0 = s.y; if (s.y > y1) y1 = s.y; }
+					for (const s of removed) { if (s.x < x0) x0 = s.x; if (s.x > x1) x1 = s.x; if (s.y < y0) y0 = s.y; if (s.y > y1) y1 = s.y; }
 					// A new client sends the exact selection rectangle, so it can be cleaned safely.
 					// orphaned foundation tiles; the previous code guessed the area from the structure anchors (+2)
 					// This previously removed valid foundation tiles beyond the selection. For older clients,
@@ -2186,13 +2410,37 @@
 						accepted = techUnlock(state, msg.id);
 						if (accepted) {
 							techSideEffectsFor(state).add(canonicalTechKey(msg.id));
-							log("HOST: client technology unlocked through native validation:", msg.id);
+							persistResearchLedger(state);
+							try {
+								const overlays = sandustryMP.gameApi.ui && sandustryMP.gameApi.ui.overlays;
+								if (overlays && overlays.update) {
+									overlays.update(state, "management");
+									overlays.update(state, "resources");
+									overlays.update(state, "global");
+								}
+							} catch (e) {}
+							log("HOST: client technology unlocked through native validation:", msg.id, "stored=" + !!state.store.player.tech[msg.id]);
 						} else log("HOST: client technology research rejected by native validation:", msg.id);
 					}
 				} finally { sandustryMP._applyingNet = false; }
 				if (accepted) {
 					for (const peerId of sandustryMP.peers.keys()) if (peerId !== fromId) net.send({ t: "tech", id: msg.id }, peerId);
 				}
+			} else if (msg.k === "tier") {
+				const factory = sandustryMP.gameApi.factory;
+				const previousLevel = factory && factory.getLevel ? factory.getLevel(state) : 1;
+				let acceptedLevel = previousLevel;
+				sandustryMP._applyingNet = true;
+				try {
+					if (factory && factory.canUnlockNextTier && factory.unlockNextTier && factory.canUnlockNextTier(state)) {
+						factory.unlockNextTier(state);
+						acceptedLevel = factory.getLevel(state);
+					}
+				} finally { sandustryMP._applyingNet = false; }
+				// Reply to every peer, including the requester. If validation failed, the
+				// requester's optimistic local tier is rolled back to the host level.
+				net.send({ t: "tier", level: acceptedLevel });
+				log(acceptedLevel > previousLevel ? "HOST accepted client factory tier unlock:" : "HOST rejected client factory tier unlock; authoritative level", acceptedLevel);
 			} else if (msg.k === "story") {
 				// client plot step: add to storyProgression.completedSteps (idempotent) + re-emit
 				sandustryMP._applyingNet = true;
@@ -3130,6 +3378,7 @@
 			sandustryMP._autoResynced = true;
 			try { net.send({ t: "resync" }); log("AUTO-RESYNC after imported host save finished loading"); } catch (e) { sandustryMP._pendingPostLoadResync = true; }
 		}
+		updateClientConveyorAnimations(state);
 		if (net && sandustryMP.net.role !== "idle" && state.store && state.store.player && now - sandustryMP._lastPosSend > 33) {
 			sandustryMP._lastPosSend = now;
 			const pl = state.store.player;

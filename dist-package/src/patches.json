@@ -318,8 +318,12 @@
    "critical": false,
    "variants": [
     {
+     "anchor": "function fc(){return Yi}window.SandustryMP&&(window.SandustryMP._mapMod={setRevealed:(e,t)=>{Zi=!!t;const n=ie.FH.storage.ensure(e,\"map\");n.revealed=Zi;Zi?(Pi&&(Pi.style.visibility=\"visible\"),Oc(e)):(gl(e),Pi&&(Pi.style.visibility=\"hidden\"))}});function hc(){_i=!0}",
+     "patched": "function fc(){return Yi}window.SandustryMP&&(window.SandustryMP._mapMod={setRevealed:(e,t)=>{Zi=!!t;const n=ie.FH.storage.ensure(e,\"map\");n.revealed=Zi;Zi?(Pi&&(Pi.style.visibility=\"visible\"),Oc(e)):(gl(e),Pi&&(Pi.style.visibility=\"hidden\"))},setHeatmapUnlocked:(e,t)=>{ui=!!t;ui?bc():(cl&&(cl.style.display=\"none\"),mc(e,!1))}});function hc(){_i=!0}"
+    },
+    {
      "anchor": "function fc(){return Yi}function hc(){_i=!0}",
-     "patched": "function fc(){return Yi}window.SandustryMP&&(window.SandustryMP._mapMod={setRevealed:(e,t)=>{Zi=!!t;const n=ie.FH.storage.ensure(e,\"map\");n.revealed=Zi;Zi?(Pi&&(Pi.style.visibility=\"visible\"),Oc(e)):(gl(e),Pi&&(Pi.style.visibility=\"hidden\"))}});function hc(){_i=!0}"
+     "patched": "function fc(){return Yi}window.SandustryMP&&(window.SandustryMP._mapMod={setRevealed:(e,t)=>{Zi=!!t;const n=ie.FH.storage.ensure(e,\"map\");n.revealed=Zi;Zi?(Pi&&(Pi.style.visibility=\"visible\"),Oc(e)):(gl(e),Pi&&(Pi.style.visibility=\"hidden\"))},setHeatmapUnlocked:(e,t)=>{ui=!!t;ui?bc():(cl&&(cl.style.display=\"none\"),mc(e,!1))}});function hc(){_i=!0}"
     }
    ]
   },
