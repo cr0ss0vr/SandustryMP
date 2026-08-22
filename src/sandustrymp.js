@@ -16,7 +16,7 @@
 			window.electron && window.electron.log && window.electron.log("info", "SandustryMP:game", line);
 		} catch (e) {}
 	};
-	const VER = "v0.1.5";
+	const VER = "v0.1.6";
 	const AUTHOR = "Cr0ss0vr";
 	const CONTRIBUTORS = "";
 	const VACUUM_CAPS = [500, 1000, 1500, 2000, 2500, 3000]; // capacity table from the game code (module 6420)
@@ -1388,6 +1388,22 @@
 			const inventory = Array.isArray(player.inventory) ? player.inventory : (player.inventory = []);
 			const ownedItemIds = new Set(inventory.map((item) => item && (item.id != null ? item.id : item.typeId)).filter((id) => id != null).map(String));
 			const buildings = Array.isArray(player.buildings) ? player.buildings : (player.buildings = []);
+			let mapTechnologyKnown = false;
+			let mapTechnologyUnlocked = false;
+			for (const techId of Object.keys(player.tech)) {
+				const definition = techModule.getTechDefinition(techId);
+				if (definition && definition.unlocks && definition.unlocks.map) {
+					mapTechnologyKnown = true;
+					if (player.tech[techId]) mapTechnologyUnlocked = true;
+				}
+			}
+			// `map.revealed` can remain true in saves affected by an earlier sync bug.
+			// The map module caches that value during initialization, so repair both its
+			// live state and persistent storage before restoring positive unlock effects.
+			if (mapTechnologyKnown && sandustryMP._mapMod && typeof sandustryMP._mapMod.setRevealed === "function") {
+				sandustryMP._mapMod.setRevealed(state, mapTechnologyUnlocked);
+				if (!mapTechnologyUnlocked) log("RESEARCH REPAIR: locked the map because its technology is not researched");
+			}
 			let repairedTechnologies = 0;
 			const previousApplyingNet = sandustryMP._applyingNet;
 			sandustryMP._applyingNet = true;
