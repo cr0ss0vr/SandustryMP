@@ -16,7 +16,7 @@
 			window.electron && window.electron.log && window.electron.log("info", "SandustryMP:game", line);
 		} catch (e) {}
 	};
-	const VER = "v0.1.4";
+	const VER = "v0.1.5";
 	const AUTHOR = "Cr0ss0vr";
 	const CONTRIBUTORS = "";
 	const VACUUM_CAPS = [500, 1000, 1500, 2000, 2500, 3000]; // capacity table from the game code (module 6420)
@@ -379,7 +379,12 @@
 		} else if (msg.t === "vacres") {
 			if (sandustryMP.net.role === "client") clientApplyVacuumResult(msg);
 		} else if (msg.t === "grabres") {
-			if (sandustryMP.net.role === "client") clientFillGrabTank(msg.types || [], msg.offs || null);
+			if (sandustryMP.net.role === "client") {
+				const pendingGrab = sandustryMP._grabPending;
+				if (pendingGrab && Number.isInteger(msg.q) && msg.q !== pendingGrab.q) return;
+				sandustryMP._grabPending = null;
+				clientFillGrabTank(msg.types || [], msg.offs || null);
+			}
 		} else if (msg.t === "grabRef") {
 			// REFUND put (R5): host failed to put item (cell busy) → put to tank
 			if (sandustryMP.net.role === "client" && typeof msg.et === "number" && msg.et > 0) clientFillGrabTank([msg.et], null);
@@ -554,6 +559,8 @@
 		sandustryMP._vacSeq = 0; sandustryMP._vacAckSeq = 0;
 		if (sandustryMP._pendingPlacements) sandustryMP._pendingPlacements.clear();
 		sandustryMP._placementSeq = 0;
+		sandustryMP._grabPending = null;
+		sandustryMP._grabRequestSequence = 0;
 		resetDecisionClockSession();
 	}
 
@@ -931,7 +938,7 @@
 	// `queued` is Sandustry's native representation of a partially blocked build.
 	// It must cross the network or clients reconstruct conveyors over sand as fully
 	// completed structures. `frame` is paired native foundation state.
-	const slimStruct = (s) => ({ type: s.type, x: s.x, y: s.y, data: s.data, queued: s.queued === true, frame: s.frame === true });
+	const slimStruct = (s) => ({ type: s.type, x: s.x, y: s.y, data: s.data, filter: s.filter, queued: s.queued === true, frame: s.frame === true });
 	const structKey = (s) => s.type + "@" + s.x + "," + s.y;
 	// KONFIG MASZYN by client (G5b): structure.data editions in the machine UI do not have an event - we detect
 	// It diffs JSON near the player, where edits occur; scanning thousands of structures every frame is too expensive.
@@ -1156,6 +1163,10 @@
 						if (sandustryMP.net.role === "client") dataSeenSet(k, s.data); // client edit detection database
 					}
 				} else if (sandustryMP.net.role === "client") dataSeenSet(structKey(s), existing.data);
+				if (s.filter !== undefined && JSON.stringify(existing.filter) !== JSON.stringify(s.filter)) {
+					existing.filter = JSON.parse(JSON.stringify(s.filter));
+					nativeStateChanged = true;
+				}
 				if (nativeStateChanged && SA.update) SA.update(state, existing, { propagateToWorkers: sandustryMP.net.role === "host" });
 				return existing;
 			}
@@ -1168,6 +1179,9 @@
 			const built = SA.build(state, pos, s.type, buildOptions);
 			if (built) {
 				if (Object.prototype.hasOwnProperty.call(s, "frame")) built.frame = s.frame === true ? true : undefined;
+				// Native placement initializes filters from the local player's default selection.
+				// Replace it only when the confirmed native structure actually supports filters.
+				if (s.filter !== undefined && built.filter !== undefined) built.filter = JSON.parse(JSON.stringify(s.filter));
 				// Always propagate host structures to simulation workers, not only when structure data is present.
 				// Otherwise the structure enters the store but the running host simulation does not know or render it.
 				// (the client with the sim in PAUZIE draws it from the store anyway - hence "the client sees, the host does not see").
@@ -1671,6 +1685,9 @@
 			if (!ast || !ast[2]) return false; // no action → let z() do hover (no download)
 			const now = performance.now();
 			if (now - (sandustryMP._lastGrabH || 0) > 100) {
+				const pendingGrab = sandustryMP._grabPending;
+				if (pendingGrab && now - pendingGrab.time < 1500) return true;
+				sandustryMP._grabPending = null;
 				sandustryMP._lastGrabH = now;
 				const m = state.session && state.session.input && state.session.input.mouse;
 				const cp = m && m.cellPosition;
@@ -1680,11 +1697,15 @@
 					// grabber harvest a 7x7 area on the host.
 					const grabberSize = getSelectedGrabberWidth(tool);
 					const selectedCellCount = grabberSize * grabberSize;
-					let free = 0;
-					for (let i = 2; i < Math.min(B.length, selectedCellCount + 2); i++) if (B[i] === 0) free++;
+					const freeSlots = [];
+					for (let i = 2; i < Math.min(B.length, selectedCellCount + 2); i++) if (B[i] === 0) freeSlots.push(i - 2);
+					const free = freeSlots.length;
 					if (free > 0) {
 						sandustryMP._grabTool = tool; // remember to fill the tank after the host responds
-						try { net.send({ t: "act", k: "grabH", x: cp.x | 0, y: cp.y | 0, f: free, s: grabberSize, lt: B[0] || 0 }); } catch (e) {}
+						const requestSequence = (sandustryMP._grabRequestSequence = (sandustryMP._grabRequestSequence || 0) + 1);
+						sandustryMP._grabPending = { q: requestSequence, time: now };
+						try { net.send({ t: "act", k: "grabH", q: requestSequence, x: cp.x | 0, y: cp.y | 0, f: free, fs: freeSlots, s: grabberSize, lt: B[0] || 0 }); }
+						catch (e) { sandustryMP._grabPending = null; }
 						if ((sandustryMP._grabHDiag = (sandustryMP._grabHDiag || 0) + 1) <= 40) log("CLIENT grabH forward @", cp.x | 0, cp.y | 0, "size=" + grabberSize, "free=" + free, "lock=" + (B[0] || 0));
 					}
 				}
@@ -1716,6 +1737,9 @@
 		// 4x4 after the first pickup, so dragging across a foundation stopped reaching gold.
 		const grabberSize = requestedSize;
 		const cap = Math.min(freeSlots, grabberSize * grabberSize);
+		const freeSlotIndexes = Array.isArray(msg.fs)
+			? new Set(msg.fs.filter((slotIndex) => Number.isInteger(slotIndex) && slotIndex >= 0 && slotIndex < grabberSize * grabberSize))
+			: null;
 		// BRAMKA NAUKOWA (fix derErste67: customer collected water without testing): vanilla grabber requires
 		// grabber.waterGrab upgrade for LIQUIDS - host-side harvest must enforce this the same.
 		// matterType "Liquid" is set dynamically from the water config (RJ.Water=3) - without the enuma hardcode.
@@ -1733,6 +1757,15 @@
 		// more eligible cells than remaining tank slots.
 		for (const [dx, dy] of getNativeGrabberOffsets(grabberSize)) {
 			if (taken >= cap) break;
+			// Grabber storage is spatial. A particle can only enter the matrix slot at
+			// the same offset from the cursor; occupied slots must not redirect nearby
+			// particles into an unrelated empty slot elsewhere in the influence area.
+			if (freeSlotIndexes) {
+				const matrixCenter = grabberSize >> 1;
+				const column = dx + matrixCenter, row = dy + matrixCenter;
+				const slotIndex = column + row * grabberSize;
+				if (!freeSlotIndexes.has(slotIndex)) continue;
+			}
 			const x = msg.x + dx, y = msg.y + dy;
 			try {
 				const info = getInfo(state, x, y);
@@ -1750,7 +1783,8 @@
 				taken++;
 			} catch (e) {}
 		}
-		if (types.length) { net.send({ t: "grabres", types, offs }, fromId); if ((sandustryMP._grabHostDiag = (sandustryMP._grabHostDiag || 0) + 1) <= 40) log("HOST grabH @", msg.x, msg.y, "size=" + grabberSize + "x" + grabberSize, "collected", types.length, "elements" + (gateSkipped ? " (omitted " + gateSkipped + " fluids - no waterGrab)" : "")); }
+		net.send({ t: "grabres", q: Number.isInteger(msg.q) ? msg.q : 0, types, offs }, fromId);
+		if (types.length) { if ((sandustryMP._grabHostDiag = (sandustryMP._grabHostDiag || 0) + 1) <= 40) log("HOST grabH @", msg.x, msg.y, "size=" + grabberSize + "x" + grabberSize, "collected", types.length, "elements" + (gateSkipped ? " (omitted " + gateSkipped + " fluids - no waterGrab)" : "")); }
 		else if (gateSkipped && (sandustryMP._grabGateDiag = (sandustryMP._grabGateDiag || 0) + 1) <= 10) log("HOST grabH: collected 0 elements;", gateSkipped, "fluids blocked (no waterGrab upgrade)");
 	}
 	// Client: populate the grabber tank matrix with host-confirmed types. `B[0]` is the locked type, `B[1]` the count, and `B[2..]` the slots.
@@ -1775,7 +1809,9 @@
 					if (idx < B.length && B[idx] === 0) { B[idx] = ty; B[1] = (B[1] || 0) + 1; if (!B[0]) B[0] = ty; filled = true; filledAny = true; }
 				}
 			}
-			if (!filled) for (let i = 2; i < Math.min(B.length, selectedCellCount + 2); i++) { if (B[i] === 0) { B[i] = ty; B[1] = (B[1] || 0) + 1; if (!B[0]) B[0] = ty; filled = true; filledAny = true; break; } }
+			// Older hosts did not include positional offsets. Retain their sequential
+			// compatibility behavior, but never relocate a position-aware response.
+			if (!filled && (!offs || offs.length < (ti2 + 1) * 2)) for (let i = 2; i < Math.min(B.length, selectedCellCount + 2); i++) { if (B[i] === 0) { B[i] = ty; B[1] = (B[1] || 0) + 1; if (!B[0]) B[0] = ty; filled = true; filledAny = true; break; } }
 			if (!filled) break; // tank full
 		}
 		if (filledAny && (sandustryMP._grabFillDiag = (sandustryMP._grabFillDiag || 0) + 1) <= 20) log("CLIENT grabber tank filled with:", types.length, "types, count=" + B[1]);
@@ -1967,6 +2003,11 @@
 		// foundation removal path (drag) couldn't match → unremovable even for the host.
 		let d = null;
 		try { if (data != null) d = JSON.parse(JSON.stringify(data)); } catch (e) {} // only serializable fields
+		let selectedFilter = null;
+		try {
+			const defaultFilter = state.store && state.store.options && state.store.options.defaultFilter;
+			if (defaultFilter != null) selectedFilter = JSON.parse(JSON.stringify(defaultFilter));
+		} catch (e) {}
 		const requestId = (sandustryMP._placementSeq = (sandustryMP._placementSeq || 0) + 1);
 		if (!sandustryMP._pendingPlacements) sandustryMP._pendingPlacements = new Map();
 		sandustryMP._pendingPlacements.set(requestId, { type: structureType, x, y, time: performance.now() });
@@ -1974,7 +2015,7 @@
 		if (sandustryMP._pendingPlacements.size > 256) sandustryMP._pendingPlacements.delete(sandustryMP._pendingPlacements.keys().next().value);
 		let replace = false;
 		try { replace = !!(sandustryMP.gameApi.input && sandustryMP.gameApi.input.isCtrlHeld && sandustryMP.gameApi.input.isCtrlHeld(state)); } catch (e) {}
-		try { net.send({ t: "act", k: "place", q: requestId, type: structureType, x, y, data: d, replace }); } catch (e) {}
+		try { net.send({ t: "act", k: "place", q: requestId, type: structureType, x, y, data: d, filter: selectedFilter, replace }); } catch (e) {}
 		return true; // cancel local placing - the client does not write anything to the world
 	};
 
@@ -2062,7 +2103,7 @@
 								structuresApi.removeAt(state, existing.x, existing.y, { removeCells: true, skipWorkerSync: true });
 							}
 						}
-						built = buildOne(state, { type: msg.type, x: msg.x, y: msg.y, data: msg.data || undefined }, false);
+						built = buildOne(state, { type: msg.type, x: msg.x, y: msg.y, data: msg.data || undefined, filter: msg.filter || undefined }, false);
 					}
 				} finally { sandustryMP._applyingNet = false; }
 				if (built) {
@@ -3255,6 +3296,7 @@
 			if (sandustryMP._curWid !== curWid) {
 				sandustryMP._curWid = curWid;
 				sandustryMP._grabTool = null;
+				sandustryMP._grabPending = null;
 				sandustryMP._grabbedCells.clear(); sandustryMP._placedCells.clear();
 				sandustryMP._fireQ = []; sandustryMP._cryoQ = []; sandustryMP._volcQ = []; sandustryMP._caulkQ = []; sandustryMP._caulkRmQ = []; sandustryMP._shakeQ = [];
 				if (sandustryMP._dataSeen) sandustryMP._dataSeen.clear();
