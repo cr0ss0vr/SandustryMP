@@ -127,6 +127,16 @@
    ]
   },
   {
+   "name": "vacuum native collector export (_vacuumMod)",
+   "critical": false,
+   "variants": [
+    {
+     "anchor": "14632(e,t,n){\"use strict\";n.d(t,{Fi:()=>T,GT:()=>k,IC:()=>M,My:()=>R,ai:()=>y,cN:()=>A,fA:()=>v,rE:()=>S,sZ:()=>w,y0:()=>E});",
+     "patched": "14632(e,t,n){\"use strict\";n.d(t,{smpCollect:()=>F});window.SandustryMP&&(window.SandustryMP._vacuumMod=t);n.d(t,{Fi:()=>T,GT:()=>k,IC:()=>M,My:()=>R,ai:()=>y,cN:()=>A,fA:()=>v,rE:()=>S,sZ:()=>w,y0:()=>E});"
+    }
+   ]
+  },
+  {
    "name": "player-dig flag (I)",
    "variants": [
     {

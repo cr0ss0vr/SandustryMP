@@ -153,16 +153,37 @@ else {
 # --- 8. main.js -------------------------------------------------------------
 $p = "$res\app\main.js"
 $s = [System.IO.File]::ReadAllText($p)
+$USERDATA_MARK_A = "// --- SandustryMP early userData override ---"
+$USERDATA_MARK_B = "// --- /SandustryMP early userData override ---"
+$existingUserDataStart = $s.IndexOf($USERDATA_MARK_A)
+if ($existingUserDataStart -ge 0) {
+    $existingUserDataEnd = $s.IndexOf($USERDATA_MARK_B, $existingUserDataStart)
+    if ($existingUserDataEnd -lt 0) { Fail "main.js has an incomplete early userData block" }
+    $s = $s.Substring(0, $existingUserDataStart) + $s.Substring($existingUserDataEnd + $USERDATA_MARK_B.Length).TrimStart()
+}
+$userDataAnchor = "const path = require('node:path')"
+if (-not $s.Contains($userDataAnchor)) { Fail "main.js early userData anchor not found" }
+$userDataBlock = @"
+$USERDATA_MARK_A
+try {
+  const smpUserDataPrefix = '--smp-userdata=';
+  const smpUserDataArgument = process.argv.find((argument) => argument.startsWith(smpUserDataPrefix));
+  if (smpUserDataArgument) {
+    const smpUserDataPath = smpUserDataArgument.slice(smpUserDataPrefix.length);
+    if (smpUserDataPath) app.setPath('userData', smpUserDataPath);
+  }
+} catch (e) { console.error('[SandustryMP] early userdata error:', e); }
+$USERDATA_MARK_B
+
+"@
+$s = $s.Replace($userDataAnchor, $userDataBlock + $userDataAnchor)
+Write-Host "[+] main.js earliest userData override"
 $MARK_A = "// --- SandustryMP init ---"
 $MARK_B = "// --- /SandustryMP init ---"
 $block = @"
 
 
 $MARK_A
-try {
-  const userDataArgument = process.argv.find((argument) => argument.startsWith('--smp-userdata='));
-  if (userDataArgument) { app.setPath('userData', userDataArgument.split('=')[1]); console.log('[SandustryMP] userData override:', userDataArgument.split('=')[1]); }
-} catch (e) { console.error('[SandustryMP] userdata error:', e); }
 try {
   app.whenReady().then(() => {
     try { require('./smp-main.js').init({ getMainWindow: () => mainWindow }); }

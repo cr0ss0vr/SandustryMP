@@ -123,9 +123,24 @@ recordAppliedChange('smp-main.js copied');
 {
   const filePath = path.join(appPath, 'main.js');
   let contents = readTextFile(filePath);
+  const USERDATA_MARK_A = '// --- SandustryMP early userData override ---';
+  const USERDATA_MARK_B = '// --- /SandustryMP early userData override ---';
+  const userDataBlock = `${USERDATA_MARK_A}\ntry {\n  const smpUserDataPrefix = '--smp-userdata=';\n  const smpUserDataArgument = process.argv.find((argument) => argument.startsWith(smpUserDataPrefix));\n  if (smpUserDataArgument) {\n    const smpUserDataPath = smpUserDataArgument.slice(smpUserDataPrefix.length);\n    if (smpUserDataPath) app.setPath('userData', smpUserDataPath);\n  }\n} catch (e) { console.error('[SandustryMP] early userdata error:', e); }\n${USERDATA_MARK_B}\n`;
+  const existingUserDataStart = contents.indexOf(USERDATA_MARK_A);
+  if (existingUserDataStart >= 0) {
+    const existingUserDataEnd = contents.indexOf(USERDATA_MARK_B, existingUserDataStart);
+    if (existingUserDataEnd < 0) throw new Error('main.js has an incomplete early userData block');
+    contents = contents.slice(0, existingUserDataStart) + contents.slice(existingUserDataEnd + USERDATA_MARK_B.length).replace(/^\s*/, '');
+  }
+  // This must run before `require('./logger')`, not merely before the later
+  // save-path constant, so Sandustry's own game/error log also uses this profile.
+  const userDataAnchor = "const path = require('node:path')";
+  if (!contents.includes(userDataAnchor)) throw new Error('main.js early userData anchor not found');
+  contents = contents.replace(userDataAnchor, userDataBlock + userDataAnchor);
+  recordAppliedChange('main.js: earliest userData override');
   const MARK_A = '// --- SandustryMP init ---';
   const MARK_B = '// --- /SandustryMP init ---';
-  const block = `\n\n${MARK_A}\ntry {\n  const userDataArgument = process.argv.find((argument) => argument.startsWith('--smp-userdata='));\n  if (userDataArgument) { app.setPath('userData', userDataArgument.split('=')[1]); console.log('[SandustryMP] userData override:', userDataArgument.split('=')[1]); }\n} catch (e) { console.error('[SandustryMP] userdata error:', e); }\ntry {\n  app.whenReady().then(() => {\n    try { require('./smp-main.js').init({ getMainWindow: () => mainWindow }); }\n    catch (e) { console.error('[SandustryMP] init error:', e); }\n  });\n} catch (e) { console.error('[SandustryMP] bootstrap error:', e); }\n${MARK_B}\n`;
+  const block = `\n\n${MARK_A}\ntry {\n  app.whenReady().then(() => {\n    try { require('./smp-main.js').init({ getMainWindow: () => mainWindow }); }\n    catch (e) { console.error('[SandustryMP] init error:', e); }\n  });\n} catch (e) { console.error('[SandustryMP] bootstrap error:', e); }\n${MARK_B}\n`;
   const blockStart = contents.indexOf(MARK_A);
   if (blockStart !== -1) {
     const blockEnd = contents.indexOf(MARK_B);

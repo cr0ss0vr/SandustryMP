@@ -39,7 +39,7 @@
 					if (ev.kind === "hosting") {
 						sandustryMP.net.role = "host"; sandustryMP.net.transport = ev.transport;
 						setStatus(ev.transport === "steam" ? t("hosting_steam") : t("hosting_lan", ev.port));
-						sandustryMP.net.lobbyId = ev.lobbyId || null; sandustryMP._autoSentWid = null; // auto-send reset; remember lobbyId
+						sandustryMP.net.lobbyId = ev.lobbyId || null; sandustryMP._autoSentWid = null; sandustryMP._pendingWorldSend = false; // auto-send reset; remember lobbyId
 						resetWorldQueue(); // new host session starts clean, peer-connected re-queues the full world
 							updateLobbyIdDisplay();
 							if (ev.transport === "steam") showInviteButton(true);
@@ -49,6 +49,7 @@
 						sandustryMP.wsx.everApplied = false; sandustryMP.wsx.mismatchLogged = false; sandustryMP.wsx.wasInWorld = false; // new client session
 						sandustryMP._lastAppliedSq = null; sandustryMP._lastAckT = 0; // new host numbers its batches from zero, a stale ack would be wrong
 						sandustryMP._worldRxDone = false; sandustryMP._worldReqN = 0; sandustryMP._worldReqT = performance.now(); sandustryMP._autoResynced = false; sandustryMP._autoLoadedOnce = false; // fresh cycle; 1. world-req at the earliest 15 seconds after join (host auto-send has the advantage)
+						sandustryMP._baseWorldReady = false; // no mirror/state mutation is valid until the host transfer has loaded
 						sandustryMP._trustedWid = null; sandustryMP._pendingTrustUntil = 0;
 						sandustryMP._gotHostWorld = false; // Critical: never carry world trust between sessions; a different host may have a different world.
 						sandustryMP._fireQ = []; sandustryMP._cryoQ = []; sandustryMP._grabbedCells.clear(); sandustryMP._placedCells.clear(); sandustryMP._volcQ = []; sandustryMP._caulkQ = []; sandustryMP._caulkRmQ = []; sandustryMP._shakeQ = []; // previous session status = other coordinates/world
@@ -74,11 +75,10 @@
 							// Cooldown 20 s for AUTO - sending save: peer-hello cycle (reconnections when P2P is overloaded)
 							// spammed transfers = client reload loop (ZeroHazard). Manual "Send World"
 							// and world-req client work without cooldown (they have their own guards).
-							if (hostInWorld) {
-								enqueueFullWorld();
-								if (performance.now() - (sandustryMP._autoSendT || 0) > 20000) { sandustryMP._autoSendT = performance.now(); sendWorld(); }
-								else log("Auto-send skipped because the previous save transfer started less than 20 seconds ago");
-							}
+							// The peer can connect while the selected save is still loading. Keep this request pending;
+							// the frame hook starts the transfer as soon as the newly loaded host state is available.
+							sandustryMP._pendingWorldSend = true;
+							if (hostInWorld) sendWorld();
 						}
 					} else if (ev.kind === "peer-disconnected") {
 						if (sandustryMP.state) profileSave(sandustryMP.state); // Persist the profile before any state transition (G7-lite).

@@ -15,12 +15,44 @@ const fs = require('fs');
 const path = require('path');
 
 const TAG = '[SandustryMP:net]';
-let fileLog = null;
-try { fileLog = require('./logger').createLogger('SandustryMP'); } catch (e) { /* Game logger unavailable. */ }
+const USER_DATA_ARGUMENT = '--smp-userdata=';
+let logStream = null;
+
+function getUserDataPath() {
+  const userDataArgument = process.argv.find((argument) => argument.startsWith(USER_DATA_ARGUMENT));
+  if (userDataArgument) {
+    const requestedPath = userDataArgument.slice(USER_DATA_ARGUMENT.length).trim();
+    if (requestedPath) return path.resolve(requestedPath);
+  }
+  try {
+    const electronApp = require('electron').app;
+    if (electronApp) return electronApp.getPath('userData');
+  } catch (e) { /* Fall through to the standard AppData location. */ }
+  const appDataPath = process.env.APPDATA || path.join(require('os').homedir(), 'AppData', 'Roaming');
+  return path.join(appDataPath, 'sandustry');
+}
+
+function initializeFileLog() {
+  if (logStream) return;
+  try {
+    const logDirectory = path.join(getUserDataPath(), 'logs');
+    fs.mkdirSync(logDirectory, { recursive: true });
+    logStream = fs.createWriteStream(path.join(logDirectory, 'main.log'), { flags: 'a', encoding: 'utf8' });
+    logStream.on('error', (error) => {
+      console.error(TAG, 'File log error:', error.message);
+      logStream = null;
+    });
+  } catch (error) {
+    console.error(TAG, 'Could not initialize file logging:', error.message);
+    logStream = null;
+  }
+}
+
+initializeFileLog();
 const log = (...values) => {
   const line = values.map((value) => (typeof value === 'string' ? value : JSON.stringify(value, (key, nestedValue) => (typeof nestedValue === 'bigint' ? String(nestedValue) : nestedValue)))).join(' ');
   console.log(TAG, line);
-  if (fileLog) fileLog.info(line);
+  if (logStream) logStream.write('[' + new Date().toISOString() + '] [INFO] [SandustryMP:net] ' + line + '\n');
 };
 
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
@@ -273,7 +305,7 @@ function tryJoinFromArgv(argv, source) {
     if (!id) for (const argument of argv) { const lobbyMatch = /joinlobby\/\d+\/(\d+)/.exec(String(argument)); if (lobbyMatch) { id = lobbyMatch[1]; break; } }
     if (!id) return false;
     if (!networkState.steam) { log('argv lobby ' + id + '- Steam not initialized yet, waiting'); networkState._pendingJoin = id; return false; }
-    log('Auto-join lobby z argv (' + source + '):', id);
+    log('Auto-join lobby from argv (' + source + '):', id);
     joinSteamLobby(String(id)).catch((e) => emitEvent('error', { where: 'argv-join', message: e.message }));
     return true;
   } catch (e) { log('tryJoinFromArgv error:', e.message); return false; }
@@ -401,13 +433,14 @@ function handleIncoming(peerId, text, steamSid) {
   }
   // Ignore every non-handshake packet until the one-shot join probe is acknowledged.
   if (!peer.admitted || peer.rejected) return;
-  if (peer && message.t === 'hello') {
-    const nextNick = message.nick || '?';
-    const shouldEmitHello = !peer.helloSeen || peer.nick !== nextNick;
-    peer.nick = nextNick;
-    peer.helloSeen = true;
-    if (shouldEmitHello) emitEvent('peer-hello', { id: peerId, nick: peer.nick });
-    if (message.ver !== PROTO_VER) emitEvent('version-mismatch', { id: peerId, theirs: message.ver, ours: PROTO_VER });
+	if (peer && message.t === 'hello') {
+		const nextNick = message.nick || '?';
+		peer.nick = nextNick;
+		peer.helloSeen = true;
+		// `peer-connected` is the sole connection event. Renderer nickname updates are
+		// regular hello messages and must not manufacture a second join event.
+		// Older renderer hellos omit `ver`; absence is not a protocol mismatch.
+		if (message.ver !== undefined && message.ver !== PROTO_VER) emitEvent('version-mismatch', { id: peerId, theirs: message.ver, ours: PROTO_VER });
 	}
 	emitMsg(peerId, message);
   // host relays player positions/hellos to the other clients (3+ player support)
@@ -618,7 +651,7 @@ function init(opts) {
   const autotest = process.argv.find((a) => a.startsWith('--smp-autotest='));
   if (autotest) {
     const mode = autotest.split('=')[1];
-    log('AUTOTEST:', mode, '(start za 10s)');
+    log('AUTOTEST:', mode, '(starts in 10s)');
     setTimeout(() => {
       try {
         if (mode === 'host') startWsServer(27777);

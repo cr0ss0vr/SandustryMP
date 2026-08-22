@@ -16,7 +16,7 @@
 			window.electron && window.electron.log && window.electron.log("info", "SandustryMP:game", line);
 		} catch (e) {}
 	};
-	const VER = "v0.1.1";
+	const VER = "v0.1.4";
 	const AUTHOR = "Cr0ss0vr";
 	const CONTRIBUTORS = "";
 	const VACUUM_CAPS = [500, 1000, 1500, 2000, 2500, 3000]; // capacity table from the game code (module 6420)
@@ -77,6 +77,7 @@
 		const wall = unwrapTypedArray(sharedState.wallData);
 		const shadow = unwrapTypedArray(sharedState.shadowMap);
 		const authorization = unwrapTypedArray(sharedState.authorization);
+		const collectorGoldCount = unwrapTypedArray(sharedState.collectorGoldCount);
 		// sim.cellIds (Uint32 per mobile) = ODDZIELNA layer from mapData; it is read by the player's collision
 		// (`FH.player.isPositionClear` → `isCellTerrain` → `getCellId`). Without this layer, the client sees excavated terrain
 		// terrain, but physically it is still "solid". Sync = client can enter the hole. (contributed by dotNine)
@@ -87,7 +88,7 @@
 		const elementTypes = (sharedState.sim && sharedState.sim.elementData && sharedState.sim.elementData.type) || null;
 		const width = (sharedState.mapData && sharedState.mapData.width) || (state.store.world && state.store.world.size && state.store.world.size.width) || 0;
 		const height = (sharedState.mapData && sharedState.mapData.height) || (state.store.world && state.store.world.size && state.store.world.size.height) || (map && width ? map.length / 4 / width : 0);
-		return { map, wall, shadow, authorization, cellIds, elementTypes, width, height };
+		return { map, wall, shadow, authorization, cellIds, elementTypes, collectorGoldCount, width, height };
 	}
 	const ELEMENTS_MIN = 1000001, ELEMENTS_MAX = 2000000; // cellId range for elements (Lk.ELEMENTS in build 0.5.4)
 	// Built structures use several terrain types for their foundation cells. In the
@@ -293,30 +294,34 @@
 			const p = sandustryMP.peers.get(from) || { x: 0, y: 0, tx: 0, ty: 0, lastSeen: performance.now() };
 			p.nick = msg.nick || "?";
 			sandustryMP.peers.set(from, p);
+			if (!p.joinAnnounced) { p.joinAnnounced = true; addChat("★", t("chat_joined", p.nick)); }
 			setStatus(t("players", sandustryMP.peers.size + 1));
-			try { net.send({ t: "mver", v: VER, gf: sandustryMP._gameFp || null }, from); } catch (e) {} // wersja MODA + odcisk buildu GRY
+			if (!p.modVersionRequested) {
+				p.modVersionRequested = true;
+				try { net.send({ t: "mver", v: VER, gf: sandustryMP._gameFp || null }, from); } catch (e) {}
+			}
 			// old mod (≤0.9.7) doesn't know mver and won't respond - after 5 seconds no response ALARM (case of "man on 0.9.0")
 			setTimeout(() => {
 				const pp = sandustryMP.peers.get(from);
 				if (pp && !pp.modVer) {
 					setStatus(t("ver_mismatch") + " [" + (pp.nick || from) + ": OLD mod (<= 0.9.7)! / you: " + VER + "]", "#f66");
-					log("PEER ON STARYM MODZIE (no mver response):", pp.nick || from, "— must do install.bat!");
+					log("PEER IS USING AN OLD MOD VERSION (no mver response):", pp.nick || from, "— must run install.bat!");
 				}
 			}, 5000);
-			if (sandustryMP.net.role === "host") enqueueFullWorld();
+			// The client requests a full mirror with `resync` after loading the host transfer save.
 		} else if (msg.t === "mver") {
 			const p = sandustryMP.peers.get(from); if (p) p.modVer = msg.v;
 			if (msg.v !== VER) {
 				setStatus(t("ver_mismatch") + " [" + ((p && p.nick) || from) + ": " + msg.v + " / you: " + VER + "]", "#f66");
-				log("VARIOUS WERSJE MODA:", from, "has", msg.v, "— ja mam", VER);
-			} else log("wersja moda OK u", (p && p.nick) || from, "->", msg.v);
+				log("MOD VERSION MISMATCH:", from, "has", msg.v, "— local version is", VER);
+			} else log("Mod version matches for", (p && p.nick) || from, "->", msg.v);
 			// build imprint GRY (guard R3): different builds = different element enums/anchors → warn instead of silent corruption
 			if (msg.gf && sandustryMP._gameFp && msg.gf !== sandustryMP._gameFp) {
 				setStatus("⚠ DIFFERENT GAME BUILDS! [" + ((p && p.nick) || from) + "] — update the game on both sides", "#f66");
-				log("VARIOUS BUILDY GRY:", from, "has", msg.gf, "— ja mam", sandustryMP._gameFp);
+				log("GAME BUILD MISMATCH:", from, "has", msg.gf, "— local build is", sandustryMP._gameFp);
 			}
 		} else if (msg.t === "wi") {
-			if (sandustryMP.net.role === "client" && sandustryMP.state && sandustryMP.wsx.paused) { sandustryMP._applyingNet = true; try { applyWorldItems(sandustryMP.state, msg.wi); } finally { sandustryMP._applyingNet = false; } }
+			if (sandustryMP.net.role === "client" && sandustryMP._baseWorldReady && sandustryMP.state && sandustryMP.wsx.paused) { sandustryMP._applyingNet = true; try { applyWorldItems(sandustryMP.state, msg.wi); } finally { sandustryMP._applyingNet = false; } }
 		} else if (msg.t === "chat") {
 			const nick = (sandustryMP.peers.get(from) && sandustryMP.peers.get(from).nick) || "?";
 			addChat(nick, String(msg.m || "").slice(0, 200));
@@ -328,7 +333,7 @@
 				else if (!msg.p && sandustryMP._hostPausedShown) { sandustryMP._hostPausedShown = false; setStatus(t("players", sandustryMP.peers.size + 1)); }
 			}
 		} else if (msg.t === "wc") {
-			applyWorldBatch(msg).catch((e) => log("apply error:", e.message));
+			if (sandustryMP._baseWorldReady) applyWorldBatch(msg).catch((e) => log("apply error:", e.message));
 		} else if (msg.t === "wcack") {
 			// Client acks the last APPLIED batch. This is the only signal we have for how far behind it is:
 			// Steam's send buffer is invisible to us and sendP2PPacket never reports that it is full.
@@ -353,24 +358,26 @@
 		} else if (msg.t === "act") {
 			if (sandustryMP.net.role === "host") replayAction(msg, from);
 		} else if (msg.t === "st") {
-			if (sandustryMP.net.role === "client") applyNetStructs(msg);
+			if (sandustryMP.net.role === "client" && sandustryMP._baseWorldReady) applyNetStructs(msg);
+		} else if (msg.t === "placeResult") {
+			if (sandustryMP.net.role === "client") applyPlacementResult(msg);
 		} else if (msg.t === "snap") {
-			if (sandustryMP.net.role === "client") applySnapshot(msg).catch((e) => log("snap error:", e.message));
+			if (sandustryMP.net.role === "client" && sandustryMP._baseWorldReady) applySnapshot(msg).catch((e) => log("snap error:", e.message));
 		} else if (msg.t === "res") {
-			if (sandustryMP.net.role === "client") applyResources(msg);
+			if (sandustryMP.net.role === "client" && sandustryMP._baseWorldReady) applyResources(msg);
 		} else if (msg.t === "tech") {
-			if (sandustryMP.net.role === "client" && sandustryMP.state && msg.id) applySyncedTechUnlock(sandustryMP.state, msg.id);
+			if (sandustryMP.net.role === "client" && sandustryMP._baseWorldReady && sandustryMP.state && msg.id) applySyncedTechUnlock(sandustryMP.state, msg.id);
 		} else if (msg.t === "resDelta") {
 			if (sandustryMP.net.role === "host") applyResourceDelta(msg);
 		} else if (msg.t === "ent") {
-			if (sandustryMP.net.role === "client") applyEntities(msg);
+			if (sandustryMP.net.role === "client" && sandustryMP._baseWorldReady) applyEntities(msg);
 		} else if (msg.t === "myproj") {
 			const p = sandustryMP.peers.get(from);
 			if (p) p.projectiles = msg.list || [];
 		} else if (msg.t === "snd") {
 			playRemoteSound(msg);
 		} else if (msg.t === "vacres") {
-			if (sandustryMP.net.role === "client") clientFillTanks(msg.types || []);
+			if (sandustryMP.net.role === "client") clientApplyVacuumResult(msg);
 		} else if (msg.t === "grabres") {
 			if (sandustryMP.net.role === "client") clientFillGrabTank(msg.types || [], msg.offs || null);
 		} else if (msg.t === "grabRef") {
@@ -396,8 +403,8 @@
 			// (fix TCentraL "went crazy with the retrys"): ignore until the current reception ends.
 			if (sandustryMP._worldRx && !sandustryMP._worldRx.done) { log("world-begin ignored because the previous transfer is still in progress"); return; }
 			sandustryMP._gotHostWorld = true; // we received the world FROM the host → we trust its worldId when both in game (see applyWorldBatch)
-			sandustryMP._worldRx = { tid: msg.tid, name: msg.name, total: msg.chunks, parts: new Array(msg.chunks), got: 0, from, done: false, ended: false };
-			log("world-begin: tid", msg.tid, "-", msg.name, "-", msg.chunks, "paczek,", Math.round((msg.size || 0) / 1024), "KB");
+			sandustryMP._worldRx = { tid: msg.tid, saveId: msg.saveId, name: msg.name, total: msg.chunks, parts: new Array(msg.chunks), got: 0, from, done: false, ended: false };
+			log("world-begin: tid", msg.tid, "-", msg.name, "-", msg.chunks, "packets,", Math.round((msg.size || 0) / 1024), "KB");
 			setStatus(t("receiving", 0, msg.chunks), "#ff5");
 			scheduleRxCheck();
 		} else if (msg.t === "world-chunk" && sandustryMP._worldRx) {
@@ -441,32 +448,40 @@
 				log("World import OK:", worldReceive.name, bytes.length, "bytes");
 				// Auto-load: If FH.game.load exists, jump straight into the game (no manual Load Game). (contributed by dotNine)
 				const saveId = r && r.metaData && r.metaData.id;
+				if (!saveId) { setStatus(t("import_err", "missing imported save id"), "#f66"); return; }
+				if (worldReceive.saveId && saveId !== worldReceive.saveId) log("Imported transfer save id differs from the host id:", saveId, worldReceive.saveId);
+				const previousLastPlayed = getLastPlayedGame();
 				// Reload loop fix (TCentraL, "reloading the same map over and over"): another transfer
 				// Receiving the same world must not remove the player from the game; skip loading when the mirror or another load is active.
 				// Auto-load only once per session (ZeroHazard, "reload every 10 s"); repeated transfers
 				// (e.g. peer-hello cycle on an overloaded P2P) cannot repeatedly interrupt the player to load -
-				// we only import subsequent saves; the player can load them manually via Load Game.
-				if (sandustryMP.wsx.everApplied || sandustryMP._loadingWorld || sandustryMP._autoLoadedOnce) { log("Auto-load skipped because the mirror is active, loading is in progress, or this session already auto-loaded; save imported only"); setStatus(t("world_imported", worldReceive.name), "#5f5"); return; }
+				// subsequent transfer saves are discarded because they are transport snapshots, not user saves.
+				if (sandustryMP.wsx.everApplied || sandustryMP._loadingWorld || sandustryMP._autoLoadedOnce) {
+					log("Auto-load skipped because the mirror is active, loading is in progress, or this session already auto-loaded; removing temporary transfer save");
+					await removeTransferSave(saveId, previousLastPlayed);
+					setStatus(t("world_imported", worldReceive.name), "#5f5");
+					return;
+				}
 				sandustryMP._autoLoadedOnce = true;
 				if (saveId && sandustryMP.gameApi && sandustryMP.gameApi.game && typeof sandustryMP.gameApi.game.load === "function" && sandustryMP.state) {
 					try {
 						sandustryMP._loadingWorld = true; // Prevent mirror writes during loading to avoid large-map freezes.
 						setStatus(t("loading_world"), "#ff5"); // largemap = minutes; without it it looks like crap
-						const t0 = performance.now();
-						const lr = await sandustryMP.gameApi.game.load(sandustryMP.state, saveId);
-						log("host save auto-load completed in", Math.round(performance.now() - t0), "ms");
-						if (lr && lr.success === false) throw new Error(lr.error || "load success:false");
-						// The engine may assign a new local `worldId` to identical loaded content.
-						// window of trust so that subsequent "wc" (mirror) are not rejected as "another world"
-						sandustryMP._pendingTrustUntil = performance.now() + 15000;
-						setStatus(t("world_imported_loaded", worldReceive.name), "#5f5");
-						// full world FROM RAZU after entry (we are not waiting for everApplied - with fully compatible
-						// there may be nothing to use save and AUTO-RESYNC would not fire when the mirror starts)
-						if (!sandustryMP._autoResynced) { sandustryMP._autoResynced = true; try { net.send({ t: "resync" }); log("AUTO-RESYNC after auto-load"); } catch (e2) {} }
+						// FH.game.load navigates to a fresh renderer and returns immediately. Preserve
+						// cleanup/trust metadata across that navigation; the new renderer consumes it
+						// only after the imported world has actually been captured.
+						localStorage.setItem("smp_pending_transfer_load", JSON.stringify({ saveId, previousLastPlayed, name: worldReceive.name }));
+						log("Navigating to imported host save:", saveId);
+						sandustryMP.gameApi.game.load(sandustryMP.state, saveId);
 						return;
-					} catch (e) { log("auto-load failed, fallback on manual Load Game:", e.message); }
-					finally { sandustryMP._loadingWorld = false; }
+					} catch (e) {
+						sandustryMP._loadingWorld = false;
+						localStorage.removeItem("smp_pending_transfer_load");
+						await removeTransferSave(saveId, previousLastPlayed);
+						log("auto-load failed, fallback on manual Load Game:", e.message);
+					}
 				}
+				else await removeTransferSave(saveId, previousLastPlayed);
 				setStatus(t("world_imported", worldReceive.name), "#5f5");
 			}).catch((e) => setStatus(t("import_err", e.message), "#f66"));
 		} catch (e) { setStatus(t("decode_err", e.message), "#f66"); }
@@ -534,6 +549,11 @@
 		sandustryMP.wsx.seq = 0; sandustryMP.wsx.ackSeen = false; sandustryMP.wsx.lag = 0; sandustryMP.wsx.rate = 1; // start un-throttled
 		sandustryMP.det.hostEpoch = 0; sandustryMP.det.remoteEpoch = 0; sandustryMP.det.probeSent.clear();
 		sandustryMP.det.checked = 0; sandustryMP.det.matched = 0; sandustryMP.det.mismatched = 0;
+		if (sandustryMP._remoteVacuumTools) sandustryMP._remoteVacuumTools.clear();
+		if (sandustryMP._vacuumLast) sandustryMP._vacuumLast.clear();
+		sandustryMP._vacSeq = 0; sandustryMP._vacAckSeq = 0;
+		if (sandustryMP._pendingPlacements) sandustryMP._pendingPlacements.clear();
+		sandustryMP._placementSeq = 0;
 		resetDecisionClockSession();
 	}
 
@@ -549,7 +569,7 @@
 		const worldSync = sandustryMP.wsx;
 		const now = performance.now();
 		if (worldSync.busy || now - worldSync.lastBatch < 100) return;
-		const { map, wall, shadow, authorization, cellIds, elementTypes, width: worldWidth, height: worldHeight } = worldBuffers(state);
+		const { map, wall, shadow, authorization, cellIds, elementTypes, collectorGoldCount, width: worldWidth, height: worldHeight } = worldBuffers(state);
 		if (!map || !worldWidth) return;
 		const cellIdArray = cellIds ? new Uint32Array(cellIds.buffer, cellIds.byteOffset, worldWidth * worldHeight) : null; // to read element type per cell (v4)
 		const chunkGrid = chunkDims(worldWidth, worldHeight);
@@ -636,6 +656,10 @@
 				const chunkX = chunkIndex % chunkGrid.cx, chunkY = Math.floor(chunkIndex / chunkGrid.cx);
 				const startX = chunkX * CHUNK, startY = chunkY * CHUNK;
 				const chunkWidth = Math.min(CHUNK, worldWidth - startX), chunkHeight = Math.min(CHUNK, worldHeight - startY);
+				const collectorWorldScale = 4;
+				const collectorWidth = Math.ceil(worldWidth / collectorWorldScale);
+				const collectorChunkWidth = Math.ceil(chunkWidth / collectorWorldScale);
+				const collectorChunkHeight = Math.ceil(chunkHeight / collectorWorldScale);
 				if (chunkWidth <= 0 || chunkHeight <= 0) continue;
 				// FOG-SKIP (include optimization): chunk ALLKOWICIE undiscovered (shadow=255 everywhere)
 				// it is black at the customer's - we do not ship. After discovering, the shadow changes → chunk dirty → it will fly.
@@ -670,6 +694,14 @@
 					if (authorization) for (let i = 0; i < chunkWidth; i++) { h ^= authorization[s0 + i]; h = (h * 0x01000193) >>> 0; }
 					if (cellIds) { const sb = new Uint8Array(cellIds.buffer, cellIds.byteOffset + s0 * 4, chunkWidth * 4); for (let i = 0; i < chunkWidth * 4; i++) { h ^= sb[i]; h = (h * 0x01000193) >>> 0; } }
 					for (let i = 0; i < chunkWidth; i++) { h ^= elementTypeRows[r * chunkWidth + i]; h = (h * 0x01000193) >>> 0; }
+					// collectorGoldCount is a 4x4-world-cell block grid. Fold one collector
+					// row into each corresponding world-row hash so occupancy-only changes ship.
+					if (collectorGoldCount && r % collectorWorldScale === 0) {
+						const collectorStartX = startX / collectorWorldScale;
+						const collectorY = (startY + r) / collectorWorldScale;
+						const collectorOffset = collectorY * collectorWidth + collectorStartX;
+						for (let i = 0; i < collectorChunkWidth; i++) { h ^= collectorGoldCount[collectorOffset + i]; h = (h * 0x01000193) >>> 0; }
+					}
 					return h === 0 ? 1 : h; // 0 reserved = "never sent"
 				};
 				const mask = new Uint8Array(5); // 40 bits
@@ -679,7 +711,8 @@
 					if (rowHashes[r] !== h) { rowHashes[r] = h; mask[r >> 3] |= 1 << (r & 7); rows.push(r); }
 				}
 				if (!rows.length) continue; // nothing has changed in chunk
-				const serializedChunk = new Uint8Array(11 + rows.length * chunkWidth * 12);
+				const collectorByteCount = collectorGoldCount ? collectorChunkWidth * collectorChunkHeight : 0;
+				const serializedChunk = new Uint8Array(11 + rows.length * chunkWidth * 12 + collectorByteCount);
 				const dataView = new DataView(serializedChunk.buffer);
 				dataView.setUint16(0, chunkX, true); dataView.setUint16(2, chunkY, true);
 				serializedChunk[4] = chunkWidth; serializedChunk[5] = chunkHeight;
@@ -691,6 +724,14 @@
 				for (const r of rows) { const src = (startY + r) * worldWidth + startX; if (authorization) serializedChunk.set(authorization.subarray(src, src + chunkWidth), o); o += chunkWidth; }
 				for (const r of rows) { const src = (startY + r) * worldWidth + startX; if (cellIds) serializedChunk.set(new Uint8Array(cellIds.buffer, cellIds.byteOffset + src * 4, chunkWidth * 4), o); o += chunkWidth * 4; }
 				for (const r of rows) { serializedChunk.set(elementTypeRows.subarray(r * chunkWidth, r * chunkWidth + chunkWidth), o); o += chunkWidth; }
+				if (collectorGoldCount) {
+					const collectorStartX = startX / collectorWorldScale, collectorStartY = startY / collectorWorldScale;
+					for (let r = 0; r < collectorChunkHeight; r++) {
+						const src = (collectorStartY + r) * collectorWidth + collectorStartX;
+						serializedChunk.set(collectorGoldCount.subarray(src, src + collectorChunkWidth), o);
+						o += collectorChunkWidth;
+					}
+				}
 				serializedChunks.push(serializedChunk); serializedChunkIndexes.push(chunkIndex); size += serializedChunk.length;
 			}
 			if (!serializedChunks.length) { worldSync.busy = false; return; }
@@ -708,7 +749,7 @@
 			}
 			// q = host queue size (client progress countdown, 0.9.62) + sq = pack number (wcack, PR #8)
 			const decisionClock = decisionClockSnapshot();
-			net.send({ t: "wc", v: 5, sq: worldSync.seq, ep: sandustryMP.det.hostEpoch, ct: decisionClock.tick, cs: decisionClock.seed, cb: decisionClock.base, ph: probe, wid: state.store.meta && state.store.meta.worldId, scene: state.store.scene && state.store.scene.active, W: worldWidth, H: worldHeight, n: serializedChunks.length, q: worldSync.pending.size, d: encodeBase64(compressedBatch) });
+			net.send({ t: "wc", v: 6, sq: worldSync.seq, ep: sandustryMP.det.hostEpoch, ct: decisionClock.tick, cs: decisionClock.seed, cb: decisionClock.base, ph: probe, wid: state.store.meta && state.store.meta.worldId, scene: state.store.scene && state.store.scene.active, W: worldWidth, H: worldHeight, n: serializedChunks.length, q: worldSync.pending.size, d: encodeBase64(compressedBatch) });
 			// EMA of what a chunk really costs on the wire, drives the batch budget above. Cheap chunks
 			// (few changed rows) earn a bigger portion, expensive ones a smaller one, so the byte ceiling
 			// holds regardless of what the simulation is doing.
@@ -739,7 +780,7 @@
 		if (!mgr) { log("ERROR: no manager worker for pause"); return; }
 		mgr.postMessage([54, paused]); // SetPaused - manager only; session.paused becomes false => render works
 		sandustryMP.wsx.paused = paused;
-		log("Symulacja customer:", paused ? "ZAPAUZOWANA (host mirror)" : "wznowiona");
+		log("Client simulation:", paused ? "PAUSED (host mirror)" : "resumed");
 	}
 
 	async function applyWorldBatch(msg) {
@@ -782,13 +823,13 @@
 			sandustryMP._gotHostWorld = false; // one-off - from now on, pair rules (hostWid, myWid)
 			sandustryMP._lastGoodWid = msg.wid; sandustryMP._lastGoodMyWid = myWid; // Preserve the trusted pair across reconnects intentionally.
 		}
-		const { map, wall, shadow, width: worldWidth, height: worldHeight } = worldBuffers(state);
+		const { map, wall, shadow, collectorGoldCount, width: worldWidth, height: worldHeight } = worldBuffers(state);
 		if (!map || worldWidth !== msg.W || worldHeight !== msg.H) {
 			setStatus(t("dims_differ", worldWidth + "x" + worldHeight, msg.W + "x" + msg.H), "#f66");
 			if (!sandustryMP.wsx.mismatchLogged) { sandustryMP.wsx.mismatchLogged = true; log("REJECT world: dims host=" + msg.W + "x" + msg.H + " me=" + worldWidth + "x" + worldHeight + " map=" + (!!map)); }
 			return;
 		}
-		if (msg.v !== 5) { setStatus(t("ver_mismatch"), "#f66"); return; } // v5 = row-delta (maska zmienionych wierszy per chunk)
+		if (msg.v !== 6) { setStatus(t("ver_mismatch"), "#f66"); return; } // v6 = row-delta plus collector occupancy grid
 		if (sandustryMP.wsx.mismatchLogged) { sandustryMP.wsx.mismatchLogged = false; log("World match confirmed; the mirror is starting"); }
 		sandustryMP.wsx.mismatchWarned = false;
 		setClientPaused(true);
@@ -807,7 +848,10 @@
 			const startX = chunkX * CHUNK, startY = chunkY * CHUNK;
 			const changedRows = [];
 			for (let r = 0; r < chunkHeight; r++) if (rowMask[r >> 3] & (1 << (r & 7))) changedRows.push(r);
-			if (readOffset + changedRows.length * chunkWidth * 12 > decompressedBatch.length) break; // uszkodzony batch
+			const collectorWorldScale = 4;
+			const collectorChunkWidth = Math.ceil(chunkWidth / collectorWorldScale), collectorChunkHeight = Math.ceil(chunkHeight / collectorWorldScale);
+			const collectorByteCount = collectorGoldCount ? collectorChunkWidth * collectorChunkHeight : 0;
+			if (readOffset + changedRows.length * chunkWidth * 12 + collectorByteCount > decompressedBatch.length) break; // corrupt batch
 			for (const r of changedRows) { const destinationOffset = ((startY + r) * worldWidth + startX) * 4; map.set(decompressedBatch.subarray(readOffset, readOffset + chunkWidth * 4), destinationOffset); readOffset += chunkWidth * 4; }
 			for (const r of changedRows) { const destinationOffset = (startY + r) * worldWidth + startX; wall.set(decompressedBatch.subarray(readOffset, readOffset + chunkWidth), destinationOffset); readOffset += chunkWidth; }
 			for (const r of changedRows) { const destinationOffset = (startY + r) * worldWidth + startX; if (shadow) shadow.set(decompressedBatch.subarray(readOffset, readOffset + chunkWidth), destinationOffset); readOffset += chunkWidth; }
@@ -815,6 +859,15 @@
 			for (const r of changedRows) { const destinationOffset = (startY + r) * worldWidth + startX; if (cellIds) new Uint8Array(cellIds.buffer, cellIds.byteOffset + destinationOffset * 4, chunkWidth * 4).set(decompressedBatch.subarray(readOffset, readOffset + chunkWidth * 4)); readOffset += chunkWidth * 4; }
 			// element type layer: type into elementData.type[cellId-MIN] for getResolvedTypeFromCellId to work (grabber)
 			for (const r of changedRows) { for (let cc = 0; cc < chunkWidth; cc++) { const ty = decompressedBatch[readOffset++]; if (elementTypes && cellIdArray) { const cid = cellIdArray[(startY + r) * worldWidth + startX + cc]; if (cid >= ELEMENTS_MIN && cid <= ELEMENTS_MAX) elementTypes[cid - ELEMENTS_MIN] = ty; } } }
+			if (collectorGoldCount) {
+				const collectorWidth = Math.ceil(worldWidth / collectorWorldScale);
+				const collectorStartX = startX / collectorWorldScale, collectorStartY = startY / collectorWorldScale;
+				for (let r = 0; r < collectorChunkHeight; r++) {
+					const destinationOffset = (collectorStartY + r) * collectorWidth + collectorStartX;
+					collectorGoldCount.set(decompressedBatch.subarray(readOffset, readOffset + collectorChunkWidth), destinationOffset);
+					readOffset += collectorChunkWidth;
+				}
+			}
 			appliedChunkCount++;
 		}
 		// Ochrona grabber: mirror may have retrieved STARA cell contents (host has not yet processed
@@ -875,7 +928,10 @@
 	// ------------------------------------------------------------------
 	// STRUKTURY — replikacja event-driven + okresowe uzgadnianie (snapshot)
 	// ------------------------------------------------------------------
-	const slimStruct = (s) => ({ type: s.type, x: s.x, y: s.y, data: s.data });
+	// `queued` is Sandustry's native representation of a partially blocked build.
+	// It must cross the network or clients reconstruct conveyors over sand as fully
+	// completed structures. `frame` is paired native foundation state.
+	const slimStruct = (s) => ({ type: s.type, x: s.x, y: s.y, data: s.data, queued: s.queued === true, frame: s.frame === true });
 	const structKey = (s) => s.type + "@" + s.x + "," + s.y;
 	// KONFIG MASZYN by client (G5b): structure.data editions in the machine UI do not have an event - we detect
 	// It diffs JSON near the player, where edits occur; scanning thousands of structures every frame is too expensive.
@@ -898,7 +954,7 @@
 					sandustryMP._dataSeen.set(k, cur);
 					sandustryMP._dataEdited.set(k, now);
 					try { net.send({ t: "act", k: "sdata", x: s.x, y: s.y, type: s.type, data: JSON.parse(cur) }); } catch (e) {}
-					log("CLIENT config maszyny →", k);
+					log("CLIENT machine config →", k);
 				}
 			}
 			// higiena okna ochronnego
@@ -910,6 +966,7 @@
 		if (sandustryMP._subscribedState === state || !sandustryMP.gameApi || !sandustryMP.gameApi.events) return;
 		sandustryMP._subscribedState = state;
 		try {
+			repairUnlockedResearch(state);
 			// Client placement is captured by the `_place` bundle patch, required since the 2026-08-17 game update.
 			// "building:place" to formalny INTERCEPTOR (FH.hooks.intercept + ctrl.cancel() + {structureTypes}),
 			// This is not a cancelable event, so the old event subscription could not intercept it.
@@ -1041,9 +1098,9 @@
 				const list = data.structures.map(slimStruct);
 				let links = null;
 				try { if (data.signalLinks) links = JSON.parse(JSON.stringify(data.signalLinks)); } catch (e) {}
-				if (list.length) { net.send({ t: "act", k: "paste", list, links }); log("CLIENT paste →", list.length, "struktur"); }
+				if (list.length) { net.send({ t: "act", k: "paste", list, links }); log("CLIENT paste →", list.length, "structures"); }
 			});
-			log("Subskrypcja structure/item events active");
+			log("Structure/item event subscriptions active");
 		} catch (e) { log("subscribe error:", e.message); }
 	}
 
@@ -1064,17 +1121,30 @@
 		if (!sandustryMP._structNsWarned) { sandustryMP._structNsWarned = true; log("ERROR: did not find structures API (build/removeAt/getAtCell):", Object.keys(gameApi).join(",")); }
 		return null;
 	}
-	// force=true (host setting client intent / client rendering assertion): skips check
-	// collisions by specifying JAWNIE clearance = Available (built foundation, not blocked). IMPORTANT (0.5.4): former
+	// force=true is reserved for rendering structures already confirmed by the host on paused clients.
+	// It skips collision checks by explicitly specifying clearance = Available. IMPORTANT (0.5.4): former
 	// The old `clearance:-1` workaround wrote an invalid J6 enum value into structures, causing the game to treat them as
 	// Distinguish damaged or blocked placement from a successful placement that was immediately removed. `Available=1`, while blocked is 2 or 3.
 	// passes checks (≠FullyBlocked/≠PartiallyBlocked) and the structure is POPRAWNA → does not disappear.
 	const CLEARANCE_AVAILABLE = 1; // J6.Available w buildzie 0.5.4 (patrz enum: Available=1,FullyBlocked=2,PartiallyBlocked=3,CanBeReplaced=4)
+	const CLEARANCE_PARTIALLY_BLOCKED = 3;
 	function buildOne(state, s, force) {
 		try {
 			const SA = structNs(); if (!SA) return null;
 			const existing = SA.getAtCell(state, s.x, s.y);
-			if (existing && existing.type === s.type) {
+			// Idempotent reconciliation is only for structures the host already confirmed.
+			// New host-side placement requests must reach native validation even when an
+			// identical structure currently occupies the requested cell.
+			if (force && existing && existing.type === s.type) {
+				let nativeStateChanged = false;
+				if (Object.prototype.hasOwnProperty.call(s, "queued")) {
+					const queued = s.queued === true ? true : undefined;
+					if (existing.queued !== queued) { existing.queued = queued; nativeStateChanged = true; }
+				}
+				if (Object.prototype.hasOwnProperty.call(s, "frame")) {
+					const frame = s.frame === true ? true : undefined;
+					if (existing.frame !== frame) { existing.frame = frame; nativeStateChanged = true; }
+				}
 				if (s.data && JSON.stringify(existing.data) !== JSON.stringify(s.data)) {
 					// KONFIG MASZYN (G5b): data freshly edited by the client is protected against overwriting
 					// via host snapshot (act sdata is on its way; host will confirm in next snap)
@@ -1086,12 +1156,18 @@
 						if (sandustryMP.net.role === "client") dataSeenSet(k, s.data); // client edit detection database
 					}
 				} else if (sandustryMP.net.role === "client") dataSeenSet(structKey(s), existing.data);
+				if (nativeStateChanged && SA.update) SA.update(state, existing, { propagateToWorkers: sandustryMP.net.role === "host" });
 				return existing;
 			}
-			const pos = force ? { x: s.x, y: s.y, clearance: CLEARANCE_AVAILABLE } : { x: s.x, y: s.y };
-			const built = SA.build(state, pos, s.type, {});
+			// Reconstruct host-confirmed partial builds through the native partial-clearance
+			// branch. This adds them to Sandustry's own queued-structure list, allowing the
+			// structure to finish naturally after the obstructing sand is removed.
+			const confirmedClearance = s.queued === true ? CLEARANCE_PARTIALLY_BLOCKED : CLEARANCE_AVAILABLE;
+			const pos = force ? { x: s.x, y: s.y, clearance: confirmedClearance } : { x: s.x, y: s.y };
+			const buildOptions = s.data !== undefined ? { data: s.data } : {};
+			const built = SA.build(state, pos, s.type, buildOptions);
 			if (built) {
-				if (s.data) built.data = s.data;
+				if (Object.prototype.hasOwnProperty.call(s, "frame")) built.frame = s.frame === true ? true : undefined;
 				// Always propagate host structures to simulation workers, not only when structure data is present.
 				// Otherwise the structure enters the store but the running host simulation does not know or render it.
 				// (the client with the sim in PAUZIE draws it from the store anyway - hence "the client sees, the host does not see").
@@ -1115,6 +1191,25 @@
 			else if (msg.k === "rm") for (const s of msg.list) removeOne(state, s);
 			else if (msg.k === "mv") { for (const s of msg.from) removeOne(state, s); for (const s of msg.to) { buildOne(state, s, true); sandustryMP._structApplied.set(structKey(s), performance.now()); } }
 		} finally { sandustryMP._applyingNet = false; }
+	}
+
+	function applyPlacementResult(msg) {
+		if (Number.isInteger(msg.q) && msg.q > 0) {
+			if (!sandustryMP._pendingPlacements || !sandustryMP._pendingPlacements.has(msg.q)) return;
+			sandustryMP._pendingPlacements.delete(msg.q);
+		}
+		if (msg.replaced) removeOne(sandustryMP.state, msg.replaced);
+		if (msg.result === "failure") {
+			if ((sandustryMP._placementRejectDiag = (sandustryMP._placementRejectDiag || 0) + 1) <= 100) log("CLIENT placement rejected by host @", msg.x, msg.y);
+			return;
+		}
+		if ((msg.result !== "success" && msg.result !== "partial") || !msg.structure) return;
+		const structure = msg.structure;
+		// The verification result is authoritative. A successful result is complete;
+		// a partial result retains the host's native queued/frame state.
+		if (msg.result === "success") { structure.queued = false; structure.frame = false; }
+		else if (structure.queued !== true && structure.frame !== true) structure.queued = true;
+		applyNetStructs({ k: "add", list: [structure] });
 	}
 
 	async function sendSnapshotIfDue(state) {
@@ -1157,7 +1252,7 @@
 					const appliedTs = sandustryMP._structApplied.get(k);
 					const fresh = appliedTs != null && nowS - appliedTs < 30000;
 					if (cnt >= 3 && !fresh) {
-						log("RECONCILE: usuwam ducha (nieobecny w " + cnt + " snapshotach):", k);
+						log("RECONCILE: removing ghost structure (absent from " + cnt + " snapshots):", k);
 						removeOne(state, s);
 						sandustryMP._absentCount.delete(k); sandustryMP._structApplied.delete(k);
 					}
@@ -1240,14 +1335,23 @@
 	// Setting `tech[id]=true` alone is insufficient; `unlockTech` also registers buildings in the menu and creates
 	// przedmioty do ekwipunku i emituje tech:mapUnlocked (minimapa!). _techMod = eksport
 	// module 77135 via the "tech module export" patch.
-	function techUnlock(state, techId) {
+	function techUnlock(state, techId, options) {
+		const bypassCost = !!(options && options.bypassCost);
+		const hadCheatState = !!(state && state.session && state.session.cheat);
+		const cheatState = state && state.session && (state.session.cheat || (state.session.cheat = {}));
+		const previousBypassCosts = cheatState && cheatState.bypassCosts;
 		try {
+			if (bypassCost && cheatState) cheatState.bypassCosts = true;
 			const tm = sandustryMP._techMod;
 			if (tm && tm.unlockTech && tm.getTechDefinition) {
 				const def = tm.getTechDefinition(techId);
-				if (def) { tm.unlockTech(state, def, { suppressMusic: true }); return true; }
+				if (def) return tm.unlockTech(state, def, { suppressMusic: true }) !== false;
 			}
 		} catch (e) { log("techUnlock error:", techId, e.message); }
+		finally {
+			if (cheatState) cheatState.bypassCosts = previousBypassCosts;
+			if (!hadCheatState && state && state.session) delete state.session.cheat;
+		}
 		return false;
 	}
 	function techSideEffectsFor(state) {
@@ -1262,6 +1366,48 @@
 		const key = String(techId).trim();
 		return key && key !== "undefined" && key !== "null" ? key : "";
 	}
+	function repairUnlockedResearch(state) {
+		try {
+			const techModule = sandustryMP._techMod;
+			const player = state && state.store && state.store.player;
+			if (!techModule || !techModule.unlockTech || !techModule.getTechDefinition || !player || !player.tech) return;
+			const inventory = Array.isArray(player.inventory) ? player.inventory : (player.inventory = []);
+			const ownedItemIds = new Set(inventory.map((item) => item && (item.id != null ? item.id : item.typeId)).filter((id) => id != null).map(String));
+			const buildings = Array.isArray(player.buildings) ? player.buildings : (player.buildings = []);
+			let repairedTechnologies = 0;
+			const previousApplyingNet = sandustryMP._applyingNet;
+			sandustryMP._applyingNet = true;
+			try {
+				for (const techId of Object.keys(player.tech)) {
+					if (!player.tech[techId]) continue;
+					const definition = techModule.getTechDefinition(techId);
+					if (!definition || !definition.unlocks) continue;
+					const missingStructures = (definition.unlocks.structures || []).filter((structureId) => !buildings.includes(structureId));
+					const missingItems = (definition.unlocks.items || []).filter((itemId) => !ownedItemIds.has(String(itemId)));
+					const mapUnlock = definition.unlocks.map;
+					if (!missingStructures.length && !missingItems.length && !mapUnlock) continue;
+					const repairDefinition = Object.assign({}, definition, {
+						cost: 0,
+						unlocks: Object.assign({}, definition.unlocks, {
+							structures: missingStructures,
+							items: missingItems,
+							map: mapUnlock
+						})
+					});
+					let repaired = false;
+					player.tech[techId] = false;
+					try { repaired = techModule.unlockTech(state, repairDefinition, { suppressMusic: true, skipCostCheck: true }) !== false; }
+					finally { player.tech[techId] = true; }
+					if (!repaired) continue;
+					for (const structureId of missingStructures) if (!buildings.includes(structureId)) buildings.push(structureId);
+					for (const itemId of missingItems) ownedItemIds.add(String(itemId));
+					techSideEffectsFor(state).add(canonicalTechKey(techId));
+					repairedTechnologies++;
+				}
+			} finally { sandustryMP._applyingNet = previousApplyingNet; }
+			if (repairedTechnologies) log("RESEARCH REPAIR: restored unlock side effects for", repairedTechnologies, "technologies");
+		} catch (e) { log("RESEARCH REPAIR error:", e.message); }
+	}
 	function applySyncedTechUnlock(state, techId) {
 		const key = canonicalTechKey(techId);
 		if (!state || !key || !state.store.player || !state.store.player.tech) return false;
@@ -1274,7 +1420,11 @@
 		sandustryMP._applyingNet = true;
 		let fullyUnlocked = false;
 		try {
-			fullyUnlocked = techUnlock(state, techId);
+			// A resource snapshot can set the flag before this reliable technology message
+			// arrives. Clear it so native unlockTech still runs every unlock side effect
+			// (notably tech:mapUnlocked), while bypassing a second local resource charge.
+			state.store.player.tech[techId] = false;
+			fullyUnlocked = techUnlock(state, techId, { bypassCost: true });
 			state.store.player.tech[techId] = true;
 			if (fullyUnlocked) applied.add(key);
 			else {
@@ -1452,8 +1602,27 @@
 		const now = performance.now();
 		if (now - sandustryMP._lastVac > 120) {
 			sandustryMP._lastVac = now;
-			const f = item && item.data && item.data.filter ? item.data.filter.elementType : null;
-			try { net.send({ t: "act", k: "vac", x: cell.x, y: cell.y, f }); } catch (e) {}
+			const data = item && item.data;
+			if (data && Array.isArray(data.tanks) && cell) {
+				const sequence = (sandustryMP._vacSeq = (sandustryMP._vacSeq || 0) + 1);
+				const tanks = data.tanks.map((tank) => ({
+					elementType: Number.isInteger(tank && tank.elementType) ? tank.elementType : 0,
+					amount: Math.max(0, Number.isFinite(tank && tank.amount) ? tank.amount : 0),
+				}));
+				try {
+					net.send({
+						t: "act", k: "vac", q: sequence, x: cell.x | 0, y: cell.y | 0,
+						vx: Number.isFinite(vel && vel.x) ? vel.x : 0,
+						vy: Number.isFinite(vel && vel.y) ? vel.y : 0,
+						d: {
+							tanks,
+							activeTankIdx: Number.isInteger(data.activeTankIdx) ? data.activeTankIdx : 0,
+							filter: { elementType: Number.isInteger(data.filter && data.filter.elementType) ? data.filter.elementType : null },
+							onlyFillActiveTank: data.onlyFillActiveTank === true,
+						},
+					});
+				} catch (e) {}
+			}
 		}
 		return true; // skip local tick (reads stale cellIds)
 	};
@@ -1470,6 +1639,26 @@
 		if (Number.isInteger(selectedWidth) && selectedWidth >= 1 && selectedWidth <= 32) return selectedWidth;
 		const matrixCellCount = data && data.matrix ? data.matrix.length - 2 : 1;
 		return Math.max(1, Math.min(32, Math.floor(Math.sqrt(matrixCellCount))));
+	}
+	// Match Sandustry's `$` helper exactly: start at the cursor cell, then visit
+	// successive Chebyshev rings. For even sizes the native helper generates the
+	// outer positive edge too and discards coordinates outside the matrix.
+	function getNativeGrabberOffsets(grabberSize) {
+		const offsets = [];
+		const matrixCenter = Math.floor(grabberSize / 2);
+		offsets.push([0, 0]);
+		for (let radius = 1; radius <= matrixCenter; radius++) {
+			for (let rowOffset = -radius; rowOffset <= radius; rowOffset++) {
+				for (let columnOffset = -radius; columnOffset <= radius; columnOffset++) {
+					if (Math.max(Math.abs(columnOffset), Math.abs(rowOffset)) !== radius) continue;
+					const matrixColumn = matrixCenter + columnOffset;
+					const matrixRow = matrixCenter + rowOffset;
+					if (matrixColumn < 0 || matrixColumn >= grabberSize || matrixRow < 0 || matrixRow >= grabberSize) continue;
+					offsets.push([columnOffset, rowOffset]);
+				}
+			}
+		}
+		return offsets;
 	}
 	sandustryMP._grab = (state, tool) => {
 		try {
@@ -1538,32 +1727,31 @@
 		// Lock the tank to the first captured type (`T[0]`; `if(L&&U!==L)continue`). The client can send
 		// locked tank type (msg.lt); with an empty tank, the first element collected defines the lock.
 		let lockType = (typeof msg.lt === "number" && msg.lt > 0) ? msg.lt : 0;
-		// Native matrix anchoring: odd sizes are centred; even sizes cover [-size/2, size/2-1].
-		// This also matches clientFillGrabTank's `offset + (size >> 1)` slot calculation.
-		const firstOffset = -(grabberSize >> 1);
-		const lastOffset = firstOffset + grabberSize - 1;
 		let taken = 0;
-		for (let dy = firstOffset; dy <= lastOffset && taken < cap; dy++)
-			for (let dx = firstOffset; dx <= lastOffset && taken < cap; dx++) {
-				const x = msg.x + dx, y = msg.y + dy;
-				try {
-					const info = getInfo(state, x, y);
-					if (!info || !info.elementType) continue;
-					if (info.isGrabbable === false) continue; // respect the flag when there is one; when there is no supply - take it (the client aimed)
-					const cfg = el.getConfig ? el.getConfig(info.elementType) : null;
-					if (cfg && cfg.isGrabbable === false) continue;
-					if (sandustryMP._mtLiquid !== null && cfg && cfg.matterType === sandustryMP._mtLiquid && !canLiquid) { gateSkipped++; continue; } // liquid without waterGrab testing
-					if (lockType && info.elementType !== lockType) continue; // tank only accepts JEDEN type (like vanilla)
-					if (!lockType) lockType = info.elementType;
-					removeAt(state, x, y);
-					markCellDirty(state, x, y);
-					types.push(info.elementType);
-					offs.push(dx, dy); // position relative cursor → the client maps to the appropriate tank grid slot
-					taken++;
-				} catch (e) {}
-			}
+		// Native selection is centre-first, expanding one square ring at a time.
+		// Preserve that order because it decides which particles win when there are
+		// more eligible cells than remaining tank slots.
+		for (const [dx, dy] of getNativeGrabberOffsets(grabberSize)) {
+			if (taken >= cap) break;
+			const x = msg.x + dx, y = msg.y + dy;
+			try {
+				const info = getInfo(state, x, y);
+				if (!info || !info.elementType) continue;
+				if (info.isGrabbable === false) continue; // respect the flag when there is one; when there is no supply - take it (the client aimed)
+				const cfg = el.getConfig ? el.getConfig(info.elementType) : null;
+				if (cfg && cfg.isGrabbable === false) continue;
+				if (sandustryMP._mtLiquid !== null && cfg && cfg.matterType === sandustryMP._mtLiquid && !canLiquid) { gateSkipped++; continue; } // liquid without waterGrab testing
+				if (lockType && info.elementType !== lockType) continue; // tank only accepts JEDEN type (like vanilla)
+				if (!lockType) lockType = info.elementType;
+				removeAt(state, x, y);
+				markCellDirty(state, x, y);
+				types.push(info.elementType);
+				offs.push(dx, dy); // position relative cursor → the client maps to the appropriate tank grid slot
+				taken++;
+			} catch (e) {}
+		}
 		if (types.length) { net.send({ t: "grabres", types, offs }, fromId); if ((sandustryMP._grabHostDiag = (sandustryMP._grabHostDiag || 0) + 1) <= 40) log("HOST grabH @", msg.x, msg.y, "size=" + grabberSize + "x" + grabberSize, "collected", types.length, "elements" + (gateSkipped ? " (omitted " + gateSkipped + " fluids - no waterGrab)" : "")); }
-		else if (gateSkipped && (sandustryMP._grabGateDiag = (sandustryMP._grabGateDiag || 0) + 1) <= 10) log("HOST grabH: 0 zebranych,", gateSkipped, "blocked fluids (no waterGrab test)");
+		else if (gateSkipped && (sandustryMP._grabGateDiag = (sandustryMP._grabGateDiag || 0) + 1) <= 10) log("HOST grabH: collected 0 elements;", gateSkipped, "fluids blocked (no waterGrab upgrade)");
 	}
 	// Client: populate the grabber tank matrix with host-confirmed types. `B[0]` is the locked type, `B[1]` the count, and `B[2..]` the slots.
 	function clientFillGrabTank(types, offs) {
@@ -1612,52 +1800,107 @@
 	sandustryMP._caulk = (state, x, y) => { if (!isClientSync() || !sandustryMP.wsx.paused) return; if (sandustryMP._caulkQ.length < 2000) sandustryMP._caulkQ.push(x, y); };
 	sandustryMP._caulkRm = (state, x, y) => { if (!isClientSync() || !sandustryMP.wsx.paused) return; if (sandustryMP._caulkRmQ.length < 2000) sandustryMP._caulkRmQ.push(x, y); };
 
-	function hostHarvestVacuum(msg, fromId) {
-		const state = sandustryMP.state;
-		if (!state || !sandustryMP.gameApi) return;
-		const el = sandustryMP.gameApi.elements || {};
-		const getInfo = el.getInfoAtPos;
-		const removeAt = el.removeAtDeferred || el.removeAt;
-		if (!getInfo || !removeAt) { log("ERROR vacuum: missing API elements.getInfoAtPos/removeAt - available:", Object.keys(el).join(",")); return; }
-		const types = [];
-		const R = 4;
-		let taken = 0;
-		for (let dy = -R; dy <= R && taken < 10; dy++)
-			for (let dx = -R; dx <= R && taken < 10; dx++) {
-				if (dx * dx + dy * dy > R * R) continue;
-				const x = msg.x + dx, y = msg.y + dy;
-				try {
-					const info = getInfo(state, x, y);
-					if (!info || !info.elementType) continue;
-					if (msg.f !== null && msg.f !== undefined && info.elementType !== msg.f) continue;
-					removeAt(state, x, y);
-					markCellDirty(state, x, y); // force shipping by mirror (the sucked-in element disappears at the customer's)
-					types.push(info.elementType);
-					taken++;
-				} catch (e) {}
-			}
-		if (types.length) net.send({ t: "vacres", types }, fromId);
+	function copyVacuumData(data) {
+		if (!data || !Array.isArray(data.tanks) || data.tanks.length < 1 || data.tanks.length > 8) return null;
+		return {
+			tanks: data.tanks.map((tank) => ({
+				elementType: Number.isInteger(tank && tank.elementType) && tank.elementType > 0 ? tank.elementType : 0,
+				amount: Math.max(0, Number.isFinite(tank && tank.amount) ? tank.amount : 0),
+			})),
+			activeTankIdx: Number.isInteger(data.activeTankIdx) ? data.activeTankIdx : 0,
+			filter: { elementType: Number.isInteger(data.filter && data.filter.elementType) ? data.filter.elementType : null },
+			onlyFillActiveTank: data.onlyFillActiveTank === true,
+		};
 	}
 
-	function clientFillTanks(types) {
+	function sendNativeVacuumResult(tool, sequence, fromId) {
+		const data = copyVacuumData(tool && tool.data);
+		if (data) net.send({ t: "vacres", q: sequence, d: data }, fromId);
+	}
+
+	function hostHarvestVacuum(msg, fromId) {
 		const state = sandustryMP.state;
-		if (!state || !types.length) return;
+		const nativeCollect = sandustryMP._vacuumMod && sandustryMP._vacuumMod.smpCollect;
+		const vacuumData = copyVacuumData(msg.d);
+		if (!state || typeof nativeCollect !== "function" || !vacuumData) {
+			if (!sandustryMP._vacuumNativeWarned) {
+				sandustryMP._vacuumNativeWarned = true;
+				log("ERROR vacuum: native collector unavailable (patch 'vacuum native collector export' not applied?)");
+			}
+			return;
+		}
+		if (!sandustryMP._vacuumLast) sandustryMP._vacuumLast = new Map();
+		const now = performance.now();
+		if (now - (sandustryMP._vacuumLast.get(fromId) || 0) < 80) return;
+		sandustryMP._vacuumLast.set(fromId, now);
+		const sequence = Number.isInteger(msg.q) ? msg.q : 0;
+		if (!sandustryMP._remoteVacuumTools) sandustryMP._remoteVacuumTools = new Map();
+		let remoteVacuum = sandustryMP._remoteVacuumTools.get(fromId);
+		if (remoteVacuum && sequence <= remoteVacuum.sequence) return;
+		if (!remoteVacuum) {
+			remoteVacuum = { sequence, tool: { data: vacuumData } };
+			sandustryMP._remoteVacuumTools.set(fromId, remoteVacuum);
+		} else {
+			remoteVacuum.sequence = sequence;
+			// The host owns tank contents after the first request. Selection controls
+			// remain client inputs and may change without replacing authoritative amounts.
+			remoteVacuum.tool.data.activeTankIdx = vacuumData.activeTankIdx;
+			remoteVacuum.tool.data.filter = vacuumData.filter;
+			remoteVacuum.tool.data.onlyFillActiveTank = vacuumData.onlyFillActiveTank;
+		}
+		const tool = remoteVacuum.tool;
+		try {
+			nativeCollect(state, tool, { x: msg.x | 0, y: msg.y | 0 }, {
+				x: Number.isFinite(msg.vx) ? msg.vx : 0,
+				y: Number.isFinite(msg.vy) ? msg.vy : 0,
+			});
+			sendNativeVacuumResult(tool, sequence, fromId);
+			// Native removal is deferred and may roll the optimistic tank increment back.
+			// Return the settled native state too; the sequence prevents an older retry
+			// from overwriting a newer client action.
+			setTimeout(() => {
+				const current = sandustryMP._remoteVacuumTools && sandustryMP._remoteVacuumTools.get(fromId);
+				if (current && current.sequence === sequence) sendNativeVacuumResult(tool, sequence, fromId);
+			}, 100);
+		} catch (error) {
+			log("Native vacuum error:", error.message);
+		}
+	}
+
+	function clientApplyVacuumResult(msg) {
+		const state = sandustryMP.state;
+		if (!state || !msg) return;
 		try {
 			const inv = state.store.player.inventory || [];
 			const vac = inv.find((i) => i && i.data && Array.isArray(i.data.tanks));
 			if (!vac) return;
+			if (msg.d) {
+				const sequence = Number.isInteger(msg.q) ? msg.q : 0;
+				if (sequence < (sandustryMP._vacAckSeq || 0)) return;
+				const data = copyVacuumData(msg.d);
+				if (!data) return;
+				sandustryMP._vacAckSeq = sequence;
+				vac.data.tanks = data.tanks;
+				vac.data.activeTankIdx = data.activeTankIdx;
+				vac.data.filter = data.filter;
+				vac.data.onlyFillActiveTank = data.onlyFillActiveTank;
+				try { sandustryMP.gameApi.ui && sandustryMP.gameApi.ui.overlays && sandustryMP.gameApi.ui.overlays.update && sandustryMP.gameApi.ui.overlays.update(state, "hotbar"); } catch (e) {}
+				return;
+			}
+			// Compatibility with hosts from before the native-vacuum protocol.
+			const types = Array.isArray(msg.types) ? msg.types : [];
 			const tanks = vac.data.tanks;
-			let lvl = 0;
-			try { if (sandustryMP.gameApi && sandustryMP.gameApi.upgrades && sandustryMP.gameApi.upgrades.getLevel) lvl = sandustryMP.gameApi.upgrades.getLevel(state, "vacuum", "capacity") || 0; } catch (e) {}
-			const CAP = VACUUM_CAPS[lvl] || VACUUM_CAPS[0]; // real capacity table from the game code
-			for (const ty of types) {
-				let tank = tanks.find((k) => k.elementType === ty && k.amount < CAP);
-				if (!tank) tank = tanks.find((k) => 0 === k.elementType && 0 === k.amount);
+			let level = 0;
+			try { if (sandustryMP.gameApi && sandustryMP.gameApi.upgrades && sandustryMP.gameApi.upgrades.getLevel) level = sandustryMP.gameApi.upgrades.getLevel(state, "vacuum", "capacity") || 0; } catch (e) {}
+			const capacity = VACUUM_CAPS[level] || VACUUM_CAPS[0];
+			for (const elementType of types) {
+				let tank = tanks.find((entry) => entry.elementType === elementType && entry.amount < capacity);
+				if (!tank) tank = tanks.find((entry) => entry.elementType === 0 && entry.amount === 0);
 				if (!tank) continue;
-				tank.elementType = ty;
+				tank.elementType = elementType;
 				tank.amount++;
 			}
-		} catch (e) { log("fillTanks error:", e.message); }
+		} catch (e) { log("applyVacuumResult error:", e.message); }
 	}
 
 	// ------------------------------------------------------------------
@@ -1703,7 +1946,7 @@
 	sandustryMP._dropLu = () => isClientSync() && sandustryMP.wsx.paused;
 	// _place (patch bundle, at SOURCE of put action - before runInterceptorsSafe("building:place")):
 	// The client sends placement intent to the host and cancels local placement by returning true.
-	// zero cell recording). Host puts authoritatively in replayAction("place") and returns "st add" (mirror).
+	// The host returns an explicit success/partial/failure result after native validation.
 	// Host and offline modes return false for normal local placement. `buildOne` and `SA.build` do not pass through this hook.
 	// hook (this is the lower-level API), so applying structures from the network and building the host do not loop.
 	sandustryMP._place = (state, structureType, x, y, data) => {
@@ -1718,13 +1961,20 @@
 		// Garde anti-flood: with WCZYTYWANIU the game launches building:place for multiple structures at once
 		// Suppress forwarding for roughly three seconds after a scene change to avoid replaying hundreds of save-loaded placements.
 		if (sandustryMP._loadGuardUntil && performance.now() < sandustryMP._loadGuardUntil) return false; // load → allow local reconstruction, do not forward
-		if ((sandustryMP._plDiag2 = (sandustryMP._plDiag2 || 0) + 1) <= 300) log("CLIENT forward place:", structureType, "@", x, y, "(typeof " + typeof structureType + ")", data ? "z data" : "no date");
+		if ((sandustryMP._plDiag2 = (sandustryMP._plDiag2 || 0) + 1) <= 300) log("CLIENT forward place:", structureType, "@", x, y, "(typeof " + typeof structureType + ")", data ? "with data" : "without data");
 		// KLUCZOWE (fix "foundations cannot be removed"): we also forward DATA structures. Fundamenty
 		// (box/slants/color) carry a definition in data - without it the host built ZDEGENEROWANA version, which
 		// foundation removal path (drag) couldn't match → unremovable even for the host.
 		let d = null;
 		try { if (data != null) d = JSON.parse(JSON.stringify(data)); } catch (e) {} // only serializable fields
-		try { net.send({ t: "act", k: "place", type: structureType, x, y, data: d }); } catch (e) {}
+		const requestId = (sandustryMP._placementSeq = (sandustryMP._placementSeq || 0) + 1);
+		if (!sandustryMP._pendingPlacements) sandustryMP._pendingPlacements = new Map();
+		sandustryMP._pendingPlacements.set(requestId, { type: structureType, x, y, time: performance.now() });
+		// Bound abandoned requests if a peer disconnects during placement.
+		if (sandustryMP._pendingPlacements.size > 256) sandustryMP._pendingPlacements.delete(sandustryMP._pendingPlacements.keys().next().value);
+		let replace = false;
+		try { replace = !!(sandustryMP.gameApi.input && sandustryMP.gameApi.input.isCtrlHeld && sandustryMP.gameApi.input.isCtrlHeld(state)); } catch (e) {}
+		try { net.send({ t: "act", k: "place", q: requestId, type: structureType, x, y, data: d, replace }); } catch (e) {}
 		return true; // cancel local placing - the client does not write anything to the world
 	};
 
@@ -1772,10 +2022,10 @@
 			for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
 				try { const st = SA.getAtCell(state, x, y); if (st) found.set(structKey(st), slimStruct(st)); } catch (e) {}
 			}
-			if (!found.size) { log("_demol: pusty rect [" + x0 + "," + y0 + " → " + x1 + "," + y1 + "] — nothing to demolish"); return true; }
+			if (!found.size) { log("_demol: empty rectangle [" + x0 + "," + y0 + " → " + x1 + "," + y1 + "] — nothing to demolish"); return true; }
 			const list = [...found.values()];
 			try { net.send({ t: "act", k: "demolish", list, rect: { x0, y0, x1, y1 } }); } catch (e) {}
-			log("CLIENT demolish rect →", list.length, "struktur");
+			log("CLIENT demolish rectangle →", list.length, "structures");
 			return true; // skip local (non-working) demolition - confirmation will come via st rm
 		} catch (e) { return false; }
 	};
@@ -1793,19 +2043,46 @@
 				if (sc) sc(state, msg.x, msg.y, msg.c);
 				else log("ERROR: missing API setCellId");
 			} else if (msg.k === "place") {
-				// client asked to bet - host bets AUTORYTATYWNIE. force=true: we trust validation
-				// client (collision check passed for him), so we bypass the host check by specifying
-				// clearance=Available (see CLEARANCE_AVAILABLE) - aka minimum state difference → build null → "auto-delete".
+				// The host is authoritative and runs Sandustry's complete native placement validation.
+				// Omitting `clearance` makes structures.build calculate it from the current host world,
+				// including blocking, replacement, shape, tutorial, and structure-specific restrictions.
 				if ((sandustryMP._plRxDiag = (sandustryMP._plRxDiag || 0) + 1) <= 300) log("HOST RX place:", msg.type, "@", msg.x, msg.y, "from", fromId);
 				sandustryMP._applyingNet = true;
 				let built = null;
-				try { built = buildOne(state, { type: msg.type, x: msg.x, y: msg.y, data: msg.data || undefined }, true); } finally { sandustryMP._applyingNet = false; }
+				let replaced = null;
+				try {
+					if (msg.type != null && Number.isFinite(msg.x) && Number.isFinite(msg.y)) {
+						if (msg.replace) {
+							const structuresApi = structNs();
+							const existing = structuresApi && structuresApi.getAtCell(state, msg.x, msg.y);
+							if (existing) {
+								replaced = slimStruct(existing);
+								// This matches Sandustry's native CanBeReplaced branch before build:
+								// remove the old structure and all of its owned terrain cells atomically.
+								structuresApi.removeAt(state, existing.x, existing.y, { removeCells: true, skipWorkerSync: true });
+							}
+						}
+						built = buildOne(state, { type: msg.type, x: msg.x, y: msg.y, data: msg.data || undefined }, false);
+					}
+				} finally { sandustryMP._applyingNet = false; }
 				if (built) {
 					const inStore = (state.store.structures || []).indexOf(built) >= 0;
-					const list = [slimStruct(built)]; net.send({ t: "st", k: "add", list });
-					if ((sandustryMP._plDiagH = (sandustryMP._plDiagH || 0) + 1) <= 300) log("HOST: placed", msg.type, "@", built.x, built.y, "(request", msg.x, msg.y + ")", inStore ? "[in store]" : "[not in store.structures]", "-> broadcast");
+					const structure = slimStruct(built);
+					const result = structure.queued || structure.frame ? "partial" : "success";
+					net.send({ t: "placeResult", q: Number.isInteger(msg.q) ? msg.q : 0, result, x: msg.x, y: msg.y, structure, replaced }, fromId);
+					// The requester constructs only from placeResult. Other clients receive the
+					// same already-verified structure through normal replication.
+					for (const peerId of sandustryMP.peers.keys()) if (peerId !== fromId) {
+						if (replaced) net.send({ t: "st", k: "rm", list: [replaced] }, peerId);
+						net.send({ t: "st", k: "add", list: [structure] }, peerId);
+					}
+					if ((sandustryMP._plDiagH = (sandustryMP._plDiagH || 0) + 1) <= 300) log("HOST placement result:", result, msg.type, "@", built.x, built.y, inStore ? "[in store]" : "[not in store.structures]");
 				}
-				else if ((sandustryMP._plDiagHE = (sandustryMP._plDiagHE || 0) + 1) <= 300) log("HOST: placement failed", msg.type, "@", msg.x, msg.y, "(build returned null; invalid type or host collision?)");
+				else {
+					net.send({ t: "placeResult", q: Number.isInteger(msg.q) ? msg.q : 0, result: "failure", x: msg.x, y: msg.y, replaced }, fromId);
+					if (replaced) for (const peerId of sandustryMP.peers.keys()) if (peerId !== fromId) net.send({ t: "st", k: "rm", list: [replaced] }, peerId);
+					if ((sandustryMP._plDiagHE = (sandustryMP._plDiagHE || 0) + 1) <= 300) log("HOST placement result: failure", msg.type, "@", msg.x, msg.y);
+				}
 			} else if (msg.k === "build") {
 				sandustryMP._applyingNet = true;
 				try { for (const s of msg.list) buildOne(state, s); } finally { sandustryMP._applyingNet = false; }
@@ -1846,10 +2123,14 @@
 				let accepted = false;
 				try {
 					if (state.store.player && state.store.player.tech && !state.store.player.tech[msg.id]) {
-						deductCosts(state, msg.cost);
-						const real = applySyncedTechUnlock(state, msg.id);
-						accepted = true;
-						log("HOST: client tech unlocked:", msg.id, real ? "(REAL unlockTech)" : "(FALLBACK flag - _techMod patch does not match this game build!)");
+						// Run the host's native research path. Besides validating the real technology
+						// cost, it removes the matching physical gold from collector cells; directly
+						// subtracting store.resources/shared.gold leaves those cells occupied.
+						accepted = techUnlock(state, msg.id);
+						if (accepted) {
+							techSideEffectsFor(state).add(canonicalTechKey(msg.id));
+							log("HOST: client technology unlocked through native validation:", msg.id);
+						} else log("HOST: client technology research rejected by native validation:", msg.id);
 					}
 				} finally { sandustryMP._applyingNet = false; }
 				if (accepted) {
@@ -1900,7 +2181,7 @@
 							}
 						}
 					} catch (e) {}
-					log("HOST: customer critter collected:", msg.ty, first ? "(PIERWSZY — bilety!)" : "");
+					log("HOST: client collected critter:", msg.ty, first ? "(FIRST — tickets awarded!)" : "");
 				} finally { sandustryMP._applyingNet = false; }
 			} else if (msg.k === "sig") {
 				// client signal changes: execute via FH.signals.link/unlink (authoritative)
@@ -1924,7 +2205,7 @@
 						stc.data = Object.assign({}, stc.data || {}, { on: !!msg.on });
 						try { if (sandustryMP.gameApi.signals && sandustryMP.gameApi.signals.setAll) sandustryMP.gameApi.signals.setAll(state, { x: msg.x, y: msg.y }, !!msg.on); } catch (e) {}
 						try { sandustryMP.gameApi.events.emit(state, "signalButton:pressed", { structure: stc }); } catch (e) {}
-						log("HOST: customer signal button @", msg.x, msg.y, "→", msg.on);
+						log("HOST: client signal button @", msg.x, msg.y, "→", msg.on);
 					}
 				} finally { sandustryMP._applyingNet = false; }
 			} else if (msg.k === "paste") {
@@ -1937,7 +2218,7 @@
 						for (const l of msg.links) { try { if (l && l.from && l.to) sandustryMP.gameApi.signals.link(state, l.from, l.to); } catch (e) {} }
 					}
 					net.send({ t: "st", k: "add", list: msg.list });
-					log("HOST: client paste -", ok + "/" + (msg.list || []).length, "struktur");
+					log("HOST: client paste -", ok + "/" + (msg.list || []).length, "structures");
 				} finally { sandustryMP._applyingNet = false; }
 			} else if (msg.k === "sdata") {
 				// machine configuration changed by the customer (filters/priorities/UI settings)
@@ -1967,7 +2248,7 @@
 				// Client pipe demolition calls the real game function (`Zn` exported from the demolition module patch).
 				sandustryMP._applyingNet = true;
 				try {
-					if (typeof sandustryMP._pipeZn === "function") { sandustryMP._pipeZn(state, { x: msg.x0, y: msg.y0 }, { x: msg.x1, y: msg.y1 }); log("HOST: customer's pipes dismantled in the ret"); }
+					if (typeof sandustryMP._pipeZn === "function") { sandustryMP._pipeZn(state, { x: msg.x0, y: msg.y0 }, { x: msg.x1, y: msg.y1 }); log("HOST: client pipes dismantled within the rectangle"); }
 					else log("pipeRm ERROR: _pipeZn missing (patch 'demolish module exports' not applied?)");
 				} finally { sandustryMP._applyingNet = false; }
 			} else if (msg.k === "vac") {
@@ -2096,7 +2377,7 @@
 				const el = sandustryMP.gameApi.elements, c = msg.c || [];
 				sandustryMP._applyingNet = true;
 				try { for (let i = 0; i + 1 < c.length; i += 2) { try { if (el && el.createAt) el.createAt(state, c[i], c[i + 1], RJ_FREEZINGICE); } catch (e) {} } } finally { sandustryMP._applyingNet = false; }
-				if (!sandustryMP._cryoLogged) { sandustryMP._cryoLogged = true; log("HOST: customer ice restored,", c.length / 2, "cells"); }
+				if (!sandustryMP._cryoLogged) { sandustryMP._cryoLogged = true; log("HOST: client ice restored,", c.length / 2, "cells"); }
 			}
 		} catch (e) { log("replay error:", msg.k, e.message); }
 	}
@@ -2238,7 +2519,63 @@
 	// ------------------------------------------------------------------
 	// Transfer save (common starting map)
 	// ------------------------------------------------------------------
+	function getLastPlayedGame() {
+		try {
+			if (typeof window.electron.getLastPlayedGameSync !== "function") return null;
+			const value = window.electron.getLastPlayedGameSync();
+			return typeof value === "string" ? JSON.parse(value) : value;
+		}
+		catch (e) { log("Could not read the previous Continue save:", e.message); return null; }
+	}
+
+	async function restoreLastPlayedGame(previousLastPlayed, temporarySaveId) {
+		try {
+			const currentLastPlayed = getLastPlayedGame();
+			if (currentLastPlayed && currentLastPlayed.id && currentLastPlayed.id !== temporarySaveId) return;
+			if (previousLastPlayed && previousLastPlayed.id && typeof window.electron.saveLastPlayedGame === "function") await window.electron.saveLastPlayedGame(previousLastPlayed);
+			else if (typeof window.electron.clearLastPlayedGame === "function") await window.electron.clearLastPlayedGame();
+		} catch (e) { log("Could not restore the previous Continue save:", e.message); }
+	}
+
+	async function removeTransferSave(saveId, previousLastPlayed) {
+		try {
+			if (saveId && typeof window.electron.deleteSave === "function") await window.electron.deleteSave(saveId);
+			log("Removed temporary world-transfer save:", saveId);
+		} catch (e) { log("Could not remove temporary world-transfer save:", saveId, e.message); }
+		await restoreLastPlayedGame(previousLastPlayed, saveId);
+	}
+
+	function createTransferSave(state, saveName) {
+		return new Promise((resolve, reject) => {
+			const game = sandustryMP.gameApi && sandustryMP.gameApi.game;
+			if (!game || typeof game.save !== "function") { reject(new Error("native game.save is unavailable")); return; }
+			let settled = false;
+			const timeout = setTimeout(() => complete(reject, new Error("native transfer save timed out")), 120000);
+			const complete = (callback, value) => { if (settled) return; settled = true; clearTimeout(timeout); callback(value); };
+			try {
+				// FH.game.save is positional: (state, name, existingSaveId). It returns the
+				// generated id, while the underlying save record carries the callbacks.
+				const saveId = game.save(state, saveName);
+				const saving = state.session && state.session.saving;
+				if (!saveId || !saving || saving.id !== saveId) {
+					complete(reject, new Error("native game.save rejected the transfer snapshot"));
+					return;
+				}
+				saving.onComplete = () => complete(resolve, saveId);
+				saving.onError = (error) => complete(reject, error instanceof Error ? error : new Error(String(error || "native save failed")));
+			} catch (e) { complete(reject, e); }
+		});
+	}
+
+	async function findTransferSave(saveName) {
+		const saves = await window.electron.getSaveFiles();
+		if (!Array.isArray(saves)) return null;
+		return saves.find((save) => save && save.name === saveName) || null;
+	}
+
 	async function sendWorld() {
+		if (sandustryMP._creatingWorldTransfer) { log("sendWorld skipped because a transfer snapshot is already being created"); return; }
+		sandustryMP._creatingWorldTransfer = true;
 		try {
 			if (sandustryMP.net.role === "idle") { setStatus(t("connect_first"), "#f66"); return; }
 			// HOST In MENU (report TCentraL: Steam-join before the host loaded the map → the client loaded
@@ -2251,22 +2588,38 @@
 				return;
 			}
 			const hostScene = sandustryMP.state && sandustryMP.state.store && sandustryMP.state.store.scene && sandustryMP.state.store.scene.active;
-			if (hostScene === 1) {
+			if (hostScene == null || hostScene === 1) {
 				setStatus(t("host_enter_world_first"), "#fd5");
 				log("sendWorld paused - host in menu; I'm sending world-wait");
 				try { net.send({ t: "world-wait" }); } catch (e) {}
 				return;
 			}
-			const saves = await window.electron.getSaveFiles();
-			if (!saves || !saves.length) { setStatus(t("no_saves"), "#f66"); return; }
-			const ts = (s) => s.timestamp || s.updatedAt || s.savedAt || s.time || s.date || 0;
-			saves.sort((a, b) => (ts(a) > ts(b) ? 1 : -1));
-			const save = saves[saves.length - 1];
-			setStatus(t("exporting", save.name || save.id), "#ff5");
+			const transferToken = Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
+			const saveName = "SandustryMP session transfer " + transferToken;
+			const previousLastPlayed = getLastPlayedGame();
+			setStatus(t("exporting", saveName), "#ff5");
 			const exportStartedAt = performance.now();
-			const exportResult = await window.electron.exportSave(save.id);
+			let exportResult;
+			let saveId = null;
+			try {
+				await createTransferSave(sandustryMP.state, saveName);
+				const transferSave = await findTransferSave(saveName);
+				if (!transferSave || !transferSave.id) throw new Error("native transfer save completed but its generated id was not found");
+				saveId = transferSave.id;
+				exportResult = await window.electron.exportSave(saveId);
+			} finally {
+				if (!saveId) {
+					try { const transferSave = await findTransferSave(saveName); saveId = transferSave && transferSave.id; } catch (e) {}
+					if (!saveId) {
+						const currentLastPlayed = getLastPlayedGame();
+						if (currentLastPlayed && currentLastPlayed.name === saveName) saveId = currentLastPlayed.id;
+					}
+				}
+				if (saveId) await removeTransferSave(saveId, previousLastPlayed);
+				else await restoreLastPlayedGame(previousLastPlayed, null);
+			}
 			if (!exportResult || !exportResult.success) { setStatus(t("export_err", exportResult && exportResult.error), "#f66"); log("sendWorld: exportSave FAILED:", exportResult && exportResult.error); return; }
-			log("sendWorld: exported", save.name || save.id, "in", Math.round(performance.now() - exportStartedAt), "ms");
+			log("sendWorld: created and exported current session snapshot in", Math.round(performance.now() - exportStartedAt), "ms");
 			const bytes = new Uint8Array(exportResult.data.data || exportResult.data);
 			const encodedSave = encodeBase64(bytes);
 			const partSize = 49152; // 48KB/package - safely under Steam P2P limits
@@ -2279,12 +2632,15 @@
 			// host between sends!) and loaded the ZEPSUTY world. Teraz customer only accepts parcels
 			// current tid, and the host does not start a new transfer while the previous one is in progress (guard above).
 			sandustryMP._wtxSeq = (sandustryMP._wtxSeq || 0) + 1;
-			sandustryMP._wtx = { tid: sandustryMP._wtxSeq, name: save.name || save.id, parts, total: totalParts, queue: [], sent: 0, sizeKB: Math.round(bytes.length / 1024) };
+			sandustryMP._wtx = { tid: sandustryMP._wtxSeq, saveId, name: saveName, parts, total: totalParts, queue: [], sent: 0, sizeKB: Math.round(bytes.length / 1024) };
 			for (let partIndex = 0; partIndex < totalParts; partIndex++) sandustryMP._wtx.queue.push(partIndex);
-			net.send({ t: "world-begin", tid: sandustryMP._wtx.tid, name: sandustryMP._wtx.name, size: bytes.length, chunks: totalParts });
+			net.send({ t: "world-begin", tid: sandustryMP._wtx.tid, saveId: sandustryMP._wtx.saveId, name: sandustryMP._wtx.name, size: bytes.length, chunks: totalParts });
+			sandustryMP._pendingWorldSend = false;
+			sandustryMP._autoSentWid = (sandustryMP.state.store.meta && sandustryMP.state.store.meta.worldId) || "unknown";
 			setStatus(t("world_sent", sandustryMP._wtx.sizeKB, totalParts), "#5f5");
 			pumpWtx();
 		} catch (e) { setStatus(t("export_err", e.message), "#f66"); log("sendWorld error:", e); }
+		finally { sandustryMP._creatingWorldTransfer = false; }
 	}
 
 	// sends pieces in packets of several, with breaks - Steam P2P does not lose packets when the buffer is not full
@@ -2508,7 +2864,7 @@
 				} catch (e2) { log("GHOST-DIAG err:", e2.message); }
 			}
 			if (bt == null) return null;
-			if (!sandustryMP._biOk) { sandustryMP._biOk = true; log("GHOST OK: intencja pozy wykryta, bt=" + JSON.stringify(bt)); }
+			if (!sandustryMP._biOk) { sandustryMP._biOk = true; log("GHOST OK: position intent detected, bt=" + JSON.stringify(bt)); }
 			// blueprint (kopiuj-wklej): kilka struktur z offsetami; single-struct → [[0,0]] pod kursorem
 			const cd = ss.action && ss.action.customData;
 			const sel = cd && Array.isArray(cd.selectedStructures) ? cd.selectedStructures : null;
@@ -2694,12 +3050,35 @@
 			} catch (e) { log("dump error:", e.message); }
 		}
 		const now = performance.now();
+		// Completion of FH.game.load happens in this fresh renderer. Only now is it
+		// safe to trust mirror packets and delete the temporary imported save.
+		if (sandustryMP.net.role === "client" && !sandustryMP._baseWorldReady && state.store && state.store.scene && state.store.scene.active !== 1 && !sandustryMP._finishingTransferLoad) {
+			let pendingTransfer = null;
+			try { const raw = localStorage.getItem("smp_pending_transfer_load"); if (raw) pendingTransfer = JSON.parse(raw); } catch (e) {}
+			if (pendingTransfer && pendingTransfer.saveId) {
+				sandustryMP._finishingTransferLoad = true;
+				localStorage.removeItem("smp_pending_transfer_load");
+				sandustryMP._baseWorldReady = true;
+				sandustryMP._worldRxDone = true;
+				sandustryMP._gotHostWorld = true;
+				sandustryMP._pendingTrustUntil = now + 15000;
+				sandustryMP._pendingPostLoadResync = true;
+				setStatus(t("world_imported_loaded", pendingTransfer.name || "host world"), "#5f5");
+				log("Imported host save is loaded; enabling mirror and removing temporary save:", pendingTransfer.saveId);
+				removeTransferSave(pendingTransfer.saveId, pendingTransfer.previousLastPlayed || null).finally(() => { sandustryMP._finishingTransferLoad = false; });
+			}
+		}
+		if (sandustryMP.net.role === "client" && sandustryMP._baseWorldReady && sandustryMP._pendingPostLoadResync && sandustryMP.peers.size) {
+			sandustryMP._pendingPostLoadResync = false;
+			sandustryMP._autoResynced = true;
+			try { net.send({ t: "resync" }); log("AUTO-RESYNC after imported host save finished loading"); } catch (e) { sandustryMP._pendingPostLoadResync = true; }
+		}
 		if (net && sandustryMP.net.role !== "idle" && state.store && state.store.player && now - sandustryMP._lastPosSend > 33) {
 			sandustryMP._lastPosSend = now;
 			const pl = state.store.player;
 			const bi = getBuildIntent(state);
 			const mw = getMouseWorld(state);
-			if (bi && !sandustryMP._biLogged) { sandustryMP._biLogged = true; log("Intencja pose detected (the phantom should appear for the second player): bt=" + bi.bt); }
+			if (bi && !sandustryMP._biLogged) { sandustryMP._biLogged = true; log("Position intent detected (the ghost should appear for the other player): bt=" + bi.bt); }
 			net.send({ t: "pos", x: Math.round(pl.x * 10) / 10, y: Math.round(pl.y * 10) / 10, tools: getVisibleTools(state), facing: getFacing(state), aim: getAimAngle(state), trail: getTrailAlpha(state),
 				mwx: mw ? mw.x : null, mwy: mw ? mw.y : null,           // cursor in the world (action preview)
 				bt: bi ? bi.bt : null, boffs: bi ? bi.offs : null });   // intencja pozy: typ + offsety (fantom u innych graczy)
@@ -2717,7 +3096,12 @@
 		// Check continuously instead of relying on the menu-to-world edge, which sampling can miss. Contributed by dotNine.
 		if (sandustryMP.net.role === "host" && sandustryMP.peers.size && state.store && state.store.scene && state.store.scene.active !== 1) {
 			const wid = (state.store.meta && state.store.meta.worldId) || "unknown";
-			if (sandustryMP._autoSentWid !== wid) { sandustryMP._autoSentWid = wid; sendWorld(); }
+			if ((sandustryMP._pendingWorldSend || sandustryMP._autoSentWid !== wid) && !sandustryMP._creatingWorldTransfer && now >= (sandustryMP._nextWorldSendAttempt || 0)) {
+				sandustryMP._pendingWorldSend = true;
+				sandustryMP._nextWorldSendAttempt = now + 2000;
+				log("Starting pending host world transfer for", wid);
+				sendWorld();
+			}
 		}
 		// Do not stream while the host is in the menu (Akriz and derErste67 instant-disconnect fix); menu world buffers
 		// belong to SCENY MENU; streaming them to the client painted garbage and triggered it for him
@@ -2745,7 +3129,7 @@
 							try { const st = SA.getAtCell(state, x, y); if (st) leftovers.set(structKey(st), st); } catch (e) {}
 						}
 						if (leftovers.size) {
-							log("demolish-dobit: the game skipped it", leftovers.size, "structures (QUEUED tiles?) - I remove using removeAt");
+							log("Demolition cleanup: the game skipped", leftovers.size, "structures (queued tiles?) — removing them with removeAt");
 							for (const st of leftovers.values()) { try { SA.removeAt(state, st.x, st.y, {}); } catch (e) {} }
 							if (sandustryMP.net.role === "host" && sandustryMP.peers.size) try { net.send({ t: "st", k: "rm", list: [...leftovers.values()].map(slimStruct) }); } catch (e) {}
 							// removeAt can only queue removal. In the same pass getAtCell continues
@@ -2801,13 +3185,13 @@
 										x = r; // line scanned to r; y remains (the outer loop scans the next lines)
 									}
 								}
-								if (cleaned) log("demolish-dobiec: deleted", cleaned, "OSIEROCONYCH kafli (blob-expand)");
+								if (cleaned) log("Demolition cleanup: removed", cleaned, "orphaned tiles (expanded connected region)");
 							}
 						} catch (e) {
 							log("ORPHAN CLEANUP ERROR:", e.message);
 						}
 					}
-				} catch (e) { log("demolish-dobicie error:", e.message); }
+				} catch (e) { log("Demolition cleanup error:", e.message); }
 			}
 		}
 		if (isClientSync()) {
