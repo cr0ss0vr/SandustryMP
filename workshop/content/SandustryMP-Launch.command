@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================================
-# SandTogether — macOS launcher. Double-click to start the modded game.
+# SandustryMP — macOS launcher. Double-click to start the modded game.
 # If Steam restored app.asar (update/verify), re-runs the installer first so
 # the game never silently starts unmodded. Then launches through Steam so the
 # overlay and friend invites (+connect_lobby) keep working.

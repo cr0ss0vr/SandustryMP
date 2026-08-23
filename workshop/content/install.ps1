@@ -18,27 +18,134 @@ function Fail($msg) {
     exit 1
 }
 
-# --- 1. Locate Steam (registry) + all libraries -----------------------------
-$steamRoot = $null
-try { $steamRoot = (Get-ItemProperty "HKCU:\Software\Valve\Steam" -ErrorAction Stop).SteamPath -replace '/', '\' } catch {}
-if (-not $steamRoot -or -not (Test-Path $steamRoot)) { $steamRoot = "C:\Program Files (x86)\Steam" }
-Write-Host "Steam: $steamRoot"
+# --- 1. Locate Sandustry (Steam, Microsoft Store, Xbox, or Game Pass) ------
+$candidatePaths = New-Object System.Collections.Generic.List[string]
+$sandustrySteamAppId = "2764460"
+$sandustryStoreProductId = "9PPH71DV44T7"
 
-$candidates = @("$steamRoot\steamapps\common\Sandustry")
-$vdf = "$steamRoot\steamapps\libraryfolders.vdf"
-if (Test-Path $vdf) {
-    foreach ($m in (Select-String '"path"\s+"(.+?)"' $vdf -AllMatches).Matches) {
-        $lib = $m.Groups[1].Value.Replace('\\', '\')
-        $candidates += "$lib\steamapps\common\Sandustry"
+function Add-InstallCandidate($path) {
+    if ([string]::IsNullOrWhiteSpace($path)) { return }
+    $expanded = [Environment]::ExpandEnvironmentVariables($path.Trim().Trim('"'))
+    try { $fullPath = [System.IO.Path]::GetFullPath($expanded) } catch { return }
+    if ([System.IO.Path]::GetFileName($fullPath) -ieq "Sandustry.exe") {
+        $fullPath = [System.IO.Path]::GetDirectoryName($fullPath)
+    }
+    $candidatePaths.Add($fullPath.TrimEnd('\'))
+}
+
+function Add-SteamLibraryCandidate($libraryRoot) {
+    if ([string]::IsNullOrWhiteSpace($libraryRoot)) { return }
+    $steamApps = Join-Path $libraryRoot "steamapps"
+    $manifest = Join-Path $steamApps "appmanifest_$sandustrySteamAppId.acf"
+    if (Test-Path -LiteralPath $manifest -PathType Leaf) {
+        foreach ($line in Get-Content -LiteralPath $manifest -ErrorAction SilentlyContinue) {
+            if ($line -match '^\s*"installdir"\s+"(.+?)"') {
+                Add-InstallCandidate (Join-Path (Join-Path $steamApps "common") $Matches[1])
+                break
+            }
+        }
+    }
+    Add-InstallCandidate (Join-Path $steamApps "common\Sandustry")
+}
+
+function Add-SteamCandidates($steamRoot) {
+    if ([string]::IsNullOrWhiteSpace($steamRoot)) { return }
+    Add-SteamLibraryCandidate $steamRoot
+    $libraryFile = Join-Path $steamRoot "steamapps\libraryfolders.vdf"
+    if (-not (Test-Path -LiteralPath $libraryFile -PathType Leaf)) { return }
+    foreach ($line in Get-Content -LiteralPath $libraryFile -ErrorAction SilentlyContinue) {
+        if ($line -match '^\s*"path"\s+"(.+?)"') {
+            $libraryRoot = $Matches[1] -replace '\\\\', '\'
+            Add-SteamLibraryCandidate $libraryRoot
+        }
     }
 }
+
+function Add-MicrosoftCandidates($registryRoot) {
+    if (-not (Test-Path -LiteralPath $registryRoot)) { return }
+    foreach ($applicationKey in Get-ChildItem -LiteralPath $registryRoot -Recurse -ErrorAction SilentlyContinue) {
+        try {
+            $application = Get-ItemProperty -LiteralPath $applicationKey.PSPath -ErrorAction Stop
+            $identity = @($applicationKey.PSChildName, $application.DisplayName, $application.Name,
+                $application.PackageName, $application.PackageFullName, $application.PackageFamilyName,
+                $application.ProductId, $application.StoreId, $application.XboxProductId,
+                $application.Executable) -join " "
+            if ($identity -notmatch '(?i)Sandustry' -and $identity -notmatch [regex]::Escape($sandustryStoreProductId)) { continue }
+            foreach ($propertyName in @("InstallLocation", "InstallPath", "PackageRootFolder",
+                "MutableLocation", "Root", "Path", "Executable")) {
+                $candidate = $application.$propertyName
+                if (-not $candidate -or $candidate -isnot [string]) { continue }
+                Add-InstallCandidate $candidate
+                Add-InstallCandidate (Join-Path $candidate "Content")
+            }
+        } catch {}
+    }
+}
+
+foreach ($entry in @(
+    @{ Path = "HKCU:\Software\Valve\Steam"; Name = "SteamPath" },
+    @{ Path = "HKCU:\Software\Valve\Steam"; Name = "InstallPath" },
+    @{ Path = "HKLM:\SOFTWARE\Valve\Steam"; Name = "InstallPath" },
+    @{ Path = "HKLM:\SOFTWARE\WOW6432Node\Valve\Steam"; Name = "InstallPath" }
+)) {
+    try { Add-SteamCandidates (Get-ItemPropertyValue -LiteralPath $entry.Path -Name $entry.Name -ErrorAction Stop) } catch {}
+}
+
+foreach ($steamAppKey in @(
+    "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Steam App $sandustrySteamAppId",
+    "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Steam App $sandustrySteamAppId",
+    "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Steam App $sandustrySteamAppId"
+)) {
+    try { Add-InstallCandidate (Get-ItemPropertyValue -LiteralPath $steamAppKey -Name "InstallLocation" -ErrorAction Stop) } catch {}
+}
+
+foreach ($root in @(
+    "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall",
+    "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+    "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
+)) {
+    if (-not (Test-Path -LiteralPath $root)) { continue }
+    foreach ($applicationKey in Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue) {
+        try {
+            $application = Get-ItemProperty -LiteralPath $applicationKey.PSPath -ErrorAction Stop
+            if ($application.DisplayName -notlike "*Sandustry*") { continue }
+            Add-InstallCandidate $application.InstallLocation
+            if ($application.DisplayIcon) { Add-InstallCandidate (($application.DisplayIcon -split ',')[0]) }
+        } catch {}
+    }
+}
+
+foreach ($root in @(
+    "HKCU:\Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages",
+    "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Appx\AppxAllUserStore\Applications",
+    "HKLM:\SOFTWARE\Microsoft\GamingServices\PackageRepository\Root",
+    "HKLM:\SOFTWARE\Microsoft\GamingServices\GameConfig"
+)) { Add-MicrosoftCandidates $root }
+
+foreach ($appPathKey in @(
+    "HKCU:\Software\Microsoft\Windows\CurrentVersion\App Paths\Sandustry.exe",
+    "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\Sandustry.exe",
+    "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\Sandustry.exe"
+)) {
+    try { Add-InstallCandidate ((Get-Item -LiteralPath $appPathKey -ErrorAction Stop).GetValue("")) } catch {}
+}
+
 $gamePath = $null
-foreach ($c in $candidates) { if (Test-Path "$c\Sandustry.exe") { $gamePath = $c; break } }
+$checkedPaths = @($candidatePaths | Sort-Object -Unique)
+foreach ($candidate in $checkedPaths) {
+    if ((Test-Path -LiteralPath (Join-Path $candidate "Sandustry.exe") -PathType Leaf) -and
+        (Test-Path -LiteralPath (Join-Path $candidate "resources") -PathType Container)) {
+        $gamePath = $candidate
+        break
+    }
+}
 if (-not $gamePath) {
-    Write-Host "Game not found automatically. Checked:" -ForegroundColor Yellow
-    $candidates | ForEach-Object { Write-Host "  $_" }
-    $gamePath = Read-Host "Enter the Sandustry folder path (the one with Sandustry.exe)"
-    if (-not (Test-Path "$gamePath\Sandustry.exe")) { Fail "No Sandustry.exe in '$gamePath'" }
+    Write-Host "Game not found automatically. Registry candidates checked:" -ForegroundColor Yellow
+    if ($checkedPaths.Count) { $checkedPaths | ForEach-Object { Write-Host "  $_" } }
+    else { Write-Host "  (none)" }
+    $gamePath = Read-Host "Enter the Sandustry folder path (the one with Sandustry.exe and resources)"
+    if (-not (Test-Path -LiteralPath (Join-Path $gamePath "Sandustry.exe") -PathType Leaf)) { Fail "No Sandustry.exe in '$gamePath'" }
+    if (-not (Test-Path -LiteralPath (Join-Path $gamePath "resources") -PathType Container)) { Fail "No resources folder in '$gamePath'" }
 }
 Write-Host "Game: $gamePath" -ForegroundColor Green
 
@@ -90,19 +197,21 @@ function Extract-Asar($asarPath, $outDir, $unpackedDir) {
     Write-Host "Unpacked $script:extracted files." -ForegroundColor Green
 }
 
-# app.asar PRESENT = Steam (re)placed it — fresh install OR Steam auto-updated the game.
+# Microsoft Store product 9PPH71DV44T7 is Sandustry. The 9MWPM2CQNLHN link in
+# the base game points to the Gaming Services dependency, not the game install.
+# app.asar PRESENT = the platform installed or restored it after a fresh install, update, or file verification.
 # In both cases re-extract fresh so the unpacked "app" folder matches the CURRENT game build,
 # then sideline app.asar so the game loads our patched folder (not the untouched asar).
-# (This is the fix for "after install the game is standard/unmodded" — Steam restoring app.asar.)
+# This also handles a game platform restoring app.asar and causing an unmodified launch.
 if (Test-Path "$res\app.asar") {
-    if (Test-Path "$res\app") { Write-Host "Steam replaced app.asar - re-extracting fresh to match current build..." -ForegroundColor Yellow; Remove-Item "$res\app" -Recurse -Force }
+    if (Test-Path "$res\app") { Write-Host "The game platform replaced app.asar - re-extracting the current build..." -ForegroundColor Yellow; Remove-Item "$res\app" -Recurse -Force }
     Extract-Asar "$res\app.asar" "$res\app" "$res\app.asar.unpacked"
     if (Test-Path "$res\app.asar.bak") { Remove-Item "$res\app.asar.bak" -Force }
     Rename-Item "$res\app.asar" "app.asar.bak"
 } elseif (-not (Test-Path "$res\app\main.js")) {
     # no live app.asar and no unpacked folder -> fall back to our backup
     if (Test-Path "$res\app.asar.bak") { Extract-Asar "$res\app.asar.bak" "$res\app" "$res\app.asar.unpacked" }
-    else { Fail "app.asar not found in $res (Steam: verify integrity of game files first)" }
+    else { Fail "app.asar not found in $res (repair or verify the game installation first)" }
 }
 
 # --- 4. Version check -------------------------------------------------------
@@ -252,5 +361,5 @@ Write-Host ""
 Write-Host "=== DONE! SandustryMP installed. ===" -ForegroundColor Green
 Write-Host "Launch Sandustry from Steam. The SandustryMP panel appears top-right (click its header or Ctrl+Shift+H to hide)."
 Write-Host "TIP: if Steam keeps updating the game and reverting the mod, set Steam -> Sandustry -> Properties -> Updates -> 'Only update on launch', and launch via SandustryMP-START.bat."
-Write-Host "Uninstall: Steam -> Sandustry -> Properties -> Installed Files -> Verify integrity, then delete resources\app."
+Write-Host "Uninstall: repair or verify Sandustry through its installer, then delete resources\app if it remains."
 if ($Host.Name -eq "ConsoleHost") { Read-Host "Press Enter to close" }

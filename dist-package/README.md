@@ -1,102 +1,88 @@
-# SandustryMP — co-op multiplayer mod for Sandustry (v0.9.39-beta)
+# SandustryMP
 
-**Author: Kamil Padula** · Contributors: **dotNine**, **Knight-HD**, **DwoaC**, **Cr0ss0vr**, **TCentraL**
+SandustryMP is an experimental co-op multiplayer mod for Sandustry.
 
-SandustryMP adds full co-op multiplayer to Sandustry — one shared live world over
-Steam friend invites (or LAN), up to 4 players. Steam achievements keep working.
+**Author:** Cr0ss0vr
 
-Polska instrukcja: zobacz `INSTRUKCJA.md`.
+**Version:** v0.1.9
 
-## Installation — ONCE, ever
+The host owns the authoritative world. Clients receive that world and send gameplay requests to the host, which validates and executes them through Sandustry's original game logic.
+
+> SandustryMP modifies the game's Electron application. A Sandustry update may require the mod to be reinstalled or updated.
+
+## Installation
+
+Both players must install the same SandustryMP version.
 
 ### Windows
 
-1. Have Sandustry installed from Steam (launch it once normally).
-2. Right-click `install.bat` → **Run** (or `install.ps1` → Run with PowerShell;
-   if Windows blocks it: `powershell -ExecutionPolicy Bypass -File install.ps1`).
-3. Launch the game — the **SandustryMP** panel appears in the top-right corner.
+1. Install and launch Sandustry once.
+2. Run `install.bat` from this folder.
+3. Start Sandustry normally.
 
-### macOS (community-contributed by DwoaC, tested on Apple Silicon)
+If required, run `install.ps1` from PowerShell instead.
 
-1. Have Sandustry installed from Steam (launch it once normally).
-2. Double-click `install.command` (or run it in Terminal; pass the path to
-   `Sandustry.app` as an argument if your Steam library is somewhere unusual).
-   No Node.js needed — it runs on the game's own Electron runtime.
-3. Launch the game with `SandustryMP-Launch.command` — it re-installs the mod
-   automatically if a Steam update reverted it, then starts the game through
-   Steam.
+### macOS
 
-> **macOS note:** LAN co-op is fully verified (`ip:27777`; same network or a
-> VPN like Tailscale). Steam friend invites got a fix in v0.9.41 (the macOS
-> Steam library reports callback fields differently) — please report whether
-> they work for you now.
+1. Install and launch Sandustry once.
+2. Run `install.command`.
+3. Start the game with `SandustryMP-Launch.command` if a game update has restored the original application archive.
 
-### Linux (experimental — testers welcome!)
+### Linux
 
-1. Have Sandustry installed from Steam (launch it once normally; the game has
-   a native Linux build).
-2. In a terminal: `bash install-linux.sh` (pass the game folder as an argument
-   if it is not found automatically:
-   `bash install-linux.sh /path/to/steamapps/common/Sandustry`).
-   No Node.js needed — it runs on the game's own Electron runtime.
-3. Launch the game from Steam — the **SandustryMP** panel appears in the
-   top-right corner. If a **game** update from Steam reverts the mod, just
-   re-run `install-linux.sh` (mod updates are still automatic).
+1. Install and launch Sandustry once.
+2. Run `bash install-linux.sh` in a terminal.
+3. Start Sandustry normally.
 
-> **Linux note:** untested by the author (no Linux box) — the mod code itself is
-> fully cross-platform and macOS works the same way, so it is expected to run.
-> Please report success or failure (with `~/.config/Sandustry/logs/main.log`).
+You may pass a non-standard Sandustry installation directory to the macOS or Linux installer.
 
-**That's it — forever.** Since v0.9.39 the mod **auto-updates itself** at every game
-launch from your Workshop subscription (the game restarts once when it does).
-You never run the installer again, and both players always match versions.
+## Playing
 
-## How to play (over the internet, via Steam — no network setup)
+Select **Multiplayer** from Sandustry's main menu.
 
-**Host:**
-1. Panel → **Host (Steam)** → **Invite** (pick your friend).
-2. Load/start a game — the world is sent to the joiner automatically.
+### Steam
 
-**Joining player:**
-1. Accept the Steam invite (works with the game open or closed).
-2. After "World imported!": **Load Game** → load the received world.
-3. You now share one live world (the panel shows "host mirror").
+1. The host starts a Steam session.
+2. The host invites the other player.
+3. The host loads or creates the world.
+4. The joining player waits for the host's temporary world snapshot to import and load.
 
-**LAN:** Host LAN / Join LAN (type `ip` or `ip:port`, default 27777).
-**Chat:** type in the panel's message box, press Enter.
-**Hide/show panel:** click its header or Ctrl+Shift+H. **Resync** forces a full world refresh.
+### LAN
 
-## What works (v0.9.39 — full co-op)
+1. The host selects **Host LAN**.
+2. The client selects **Join LAN** and enters the host address.
+3. The host loads or creates the world.
 
-- One authoritative live world: sand, fluids, digging, terrain, unlocked zones
-  (row-delta streaming + fog-of-war skipping = low bandwidth, fast joins)
-- Every tool for every player: shovel, spray, firearms & rockets, vacuum, grabber,
-  flamethrower, cryoblaster, demolisher
-- One shared factory: build, demolish, move, copy-paste blueprints, pipes,
-  signal wiring & buttons, machine settings — on both sides
-- Shared team progression: research/upgrade pool, tech tree, story steps,
-  objectives, critter collection, factory processes
-- Item pickups with full effects; creatures, drones, projectiles, world sounds
-- Real player models with equipped tools, build ghosts, grabber crosshairs,
-  off-screen arrows; team chat
-- Per-player memory: rejoin a world and you're back where you left off, with
-  your inventory
-- Auto-reconnect on both transports; clear warnings for host-pause, version
-  mismatch and different game builds
+The default LAN port is `27777`.
 
-## Important note for the joining player
+## How synchronization works
 
-Don't rely on saving the game while connected as a client — your save captures
-the world from the moment you joined. The host's save is the authoritative one.
+- The host runs the authoritative simulation.
+- Client actions are requests; the host validates them with native Sandustry rules before changing the world.
+- The client simulation is paused while the host streams compressed world changes.
+- Structures, resources, research, factory tiers, players, drones, artefacts, and progression are reconciled from the host.
+- Joining uses a newly created temporary host save, preventing the client from loading an unrelated local save.
 
-After a **Steam game update** the mod may be reverted — just launch the game:
-the auto-updater re-installs it (macOS: or launch via `SandustryMP-Launch.command`).
+Use **Resync** if the client needs a complete world refresh. The multiplayer panel also shows connection status, player names, transfer progress, ping, and version mismatches.
 
-## Uninstall
+## Logs
 
-Steam → Sandustry → Properties → Installed Files → Verify integrity of game files,
-then delete the `resources\app` folder
-(macOS: `Sandustry.app/Contents/Resources/app`).
+When Sandustry is launched with:
 
----
-SandustryMP by **Kamil Padula** · source: https://github.com/IronBamBam1990/sandustrymp (MIT)
+```text
+--smp-userdata=C:\temp\SandustryMP\client1
+```
+
+logs are written to that directory's `logs` folder. Without the argument, logs use Sandustry's default application-data location.
+
+When reporting a multiplayer problem, include logs from both the host and the client.
+
+## Reinstalling or uninstalling
+
+After a Sandustry update, rerun the installer so the current game files receive the required patches.
+
+To remove the mod, verify Sandustry's installed files through Steam and remove the extracted `resources/app` directory if it remains.
+
+## License
+
+MIT © Cr0ss0vr

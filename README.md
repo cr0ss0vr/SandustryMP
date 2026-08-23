@@ -1,50 +1,99 @@
-# SandustryMP — Co-op Multiplayer mod for Sandustry
+# SandustryMP
 
-**Author: Cr0ss0vr** · [Steam Workshop page](https://steamcommunity.com/sharedfiles/filedetails/?id=3784750764)
+SandustryMP is an experimental co-op multiplayer mod for Sandustry.
 
-Play [Sandustry](https://store.steampowered.com/app/2764460/Sandustry/) together over the internet — no server, no port forwarding. Steam friend invites (or LAN), up to 4 players, one shared live world: digging, fluids, building, tools, resources and story progression synchronized. Steam achievements keep working.
+**Author:** Cr0ss0vr
 
-> ⚠️ Early Access game with no official mod loader — this mod patches the game files. Expect breakage after game updates; we re-anchor quickly (see `src/patches.json`).
+**Current version:** v0.1.9
 
-## For players
+The host owns the authoritative game state. Other players connect through Steam or LAN, receive the host's world, and send gameplay requests back to the host for validation and execution.
 
-Subscribe on the Workshop, then run `install.bat` (Windows), `install.command` (macOS) or `install-linux.sh` (Linux, experimental) from the mod folder **once** — since v0.9.39 the mod auto-updates itself from the Workshop folder at every game launch. Full instructions: [README (EN)](dist-package/README.md) / [INSTRUKCJA (PL)](dist-package/INSTRUKCJA.md). macOS support is community-contributed by **DwoaC** (LAN co-op verified on two Apple Silicon Macs; the Steam-invite callback fix from PR #3 awaits a live test).
+> Sandustry does not currently provide an official mod API for this project. SandustryMP patches the Electron application and may need compatibility updates after a Sandustry release.
 
-## Architecture (for contributors)
+## Installation
 
-The game is an Electron app; the simulation is non-deterministic (83× `Math.random` in physics, work-stealing scheduler), so lockstep is impossible. SandustryMP is **host-authoritative**:
+Download or clone this repository, then use the installer for your platform from `dist-package`:
 
-- **Host** runs the only real simulation and streams the world to clients: dirty 40×40 chunks of `mapData` (RGBA) + `wallData` + `shadowMap` + `authorization` + `sim.cellIds` (collision) + element types, 12 B/cell, **row-delta encoded** (per-row FNV hashes → only changed 40-cell rows are sent, protocol v5), deflate-compressed, prioritized around player positions (fast lane) with a starvation-free FIFO for the rest; fully fogged chunks are skipped until revealed.
-- **Client** simulation is paused (manager opcode `SetPaused`); rendering stays alive and reads the mirrored buffers every frame. A re-pause heartbeat protects against the game's own unpause paths (ESC menu).
-- **Client actions** (dig, build, demolish, move, vacuum, grabber, flamethrower, cryoblaster, spray, guns…) are captured via small string-patches in `bundle.js` (see `src/patches.json`, multi-version anchor variants) plus game event hooks, forwarded to the host, replayed there authoritatively, and confirmed back through the world stream.
-- **Transports**: Steam P2P (lobbies, invites, `+connect_lobby`, lobby-ID clipboard join) and a dependency-free WebSocket (LAN), both with auto-reconnect. Networking lives in the Electron main process (`src/smp-main.js`) because the renderer reloads between scenes.
-- **Shared progression**: research/upgrade pool, tech tree, story steps, critter collection and factory-process counters are host-authoritative and synced at 1 Hz; client purchases forward the real cost (resource diff) for the host to deduct.
-- **Auto-update**: at every game launch `smp-main.js` compares the mod version in the Steam Workshop folder with the installed one; a newer Workshop copy is installed (files + bundle patches) and the game relaunches once. The author's newer local build is never downgraded.
+- Windows: run `install.bat`.
+- macOS: run `install.command`.
+- Linux: run `bash install-linux.sh`.
 
-### Repo layout
+The installer locates Sandustry, extracts its Electron application when necessary, copies the SandustryMP modules into the game, applies the required bundle patches, and installs the simulation-worker bootstrap.
 
-| Path | What |
-|------|------|
-| `src/sandustrymp.js` | The mod (renderer side): HUD, world sync, action forwarding/replay, player models, i18n EN/PL |
-| `src/smp-main.js` | Electron main-process side: Steam P2P + WebSocket transports, invites, relays |
-| `src/patches.json` | Anchor/patched string pairs applied to the game's `bundle.js` (+ per-game-version variants) |
-| `src/smp-preload-append.js` | Preload bridge (`sandustrympNet`) |
-| `src/patch.js` | Node-based patcher (dev convenience) |
-| `dist-package/` | What players get: pure-PowerShell installer (no Node needed) + docs |
-| `src/publish-workshop.js` | Steam Workshop publisher (uses the game's bundled steamworks.js) |
-| `BUNDLE_MAP.md`, `WORKERS_MAP.md`, `COOP_PLAN.md`, `RECON.md`, `CHANGELOG.md` | Reverse-engineering notes, architecture plan & full changelog |
+Both the host and every client must use the same SandustryMP version and a compatible Sandustry build.
 
-### Dev loop
+## Starting a game
 
-1. Install the mod into your game once (`dist-package/install.bat`; macOS: `dist-package/install.command`; Linux: `dist-package/install-linux.sh` — the Unix installers need no Node, they run on the game's own Electron via `ELECTRON_RUN_AS_NODE`).
-2. Edit `src/sandustrymp.js`, then copy it to `<game>/resources/app/dist/js/sandustrymp.js` and restart the game (bundle patches only need re-applying when `patches.json` changes).
-3. Two-instance local testing: launch a second copy with `--smp-userdata=<dir>` (bypasses the single-instance lock; any `--smp-*` arg does) and use `Host LAN` / `Join LAN` on `127.0.0.1`.
-4. Logs: `%APPDATA%\Sandustry\logs\main.log` (macOS: `~/Library/Logs/Sandustry/main.log`) — everything the mod does is tagged `[SandustryMP]`.
+Open Sandustry and select **Multiplayer** from the main menu.
 
-### Contributing
+- **Steam:** host a Steam session and invite another player, or join an existing lobby.
+- **LAN:** select **Host LAN** on the host and connect with the host's address from the client. The default port is `27777`.
 
-PRs welcome. Keep changes host-authoritative (clients must never mutate the shared world locally except through the confirmed-mirror pattern), keep `patches.json` anchors unique-in-bundle, and note game-build compatibility in your PR. Bug reports: attach both players' `main.log`.
+The host should load or create the world. When a client joins, the host creates a temporary save snapshot and transfers that exact snapshot. The client imports and loads it, then both sides remove the temporary snapshot from their loadable saves.
+
+## Architecture
+
+Sandustry's simulation is not deterministic enough for pure lockstep multiplayer. SandustryMP therefore combines host-authoritative actions with a corrective world mirror.
+
+### Host authority
+
+The host runs the complete simulation and owns the canonical world, structures, resources, research, factory tiers, entities, and progression. Client messages describe intent, not trusted results.
+
+For actions such as building placement, replacement, research, demolition, tools, and weapons, the host checks the request against the original Sandustry logic. Only the result produced by the host is replicated. Placement can therefore return a complete structure, a queued frame, or no placement depending on native clearance and unlock validation.
+
+### Client simulation and world mirror
+
+The client's manager simulation is paused while connected. Rendering and local player movement remain active, but canonical world changes come from the host.
+
+The host sends compressed row deltas for dirty 40 x 40 chunks. Mirrored data includes terrain, walls, fog, authorization, collision cell IDs, and resolved element types. Congestion control keeps pending changes on the host so repeated edits coalesce instead of building an outdated ordered network backlog.
+
+Periodic snapshots and event messages reconcile structures, pipes, resources, research, tiers, players, drones, and native world items such as artefacts. Hash probes compare selected host and client chunks while the mirror remains the authoritative correction path.
+
+### Networking
+
+Networking runs in the Electron main process so it survives renderer scene changes. SandustryMP supports:
+
+- Steam lobbies and peer-to-peer packets.
+- A dependency-free WebSocket transport for LAN play.
+- Version and game-build checks during connection setup.
+- Acknowledgements, reconnect handling, ping measurement, and temporary save transfer.
+
+## Source layout
+
+| Path | Purpose |
+| --- | --- |
+| `src/sandustrymp.js` | Renderer entry point, host action execution, world reconciliation, and game hooks |
+| `src/network.js` | Renderer networking subscriptions and connection state |
+| `src/state.js` | Shared runtime state and synchronization bookkeeping |
+| `src/menu.js` | Main-menu Multiplayer button and lobby interface |
+| `src/localisation.js` | Localized user-interface strings |
+| `src/smp-main.js` | Electron main-process Steam, LAN, IPC, save-transfer, and logging support |
+| `src/smp-preload-append.js` | Preload bridge exposed to the renderer |
+| `src/sim-worker-bootstrap.js` | Simulation-worker deterministic clock bootstrap |
+| `src/patches.json` | Version-specific bundle patch anchors |
+| `src/patch.js` | Installer patch runner |
+| `dist-package` | Standalone release package |
+
+`dist-package/src` contains a direct release copy of `src`. Keep both directories synchronized when preparing a release.
+
+## Development and testing
+
+After changing renderer or main-process code:
+
+1. Synchronize `src` into `dist-package/src`.
+2. Run `node --check` on changed JavaScript files.
+3. Parse and validate every packaged copy of `patches.json`.
+4. Run `git diff --check`.
+5. Reinstall the mod whenever bundle patches or Electron main-process files change.
+
+For a local two-instance test, launch the second instance with a separate data directory:
+
+```text
+--smp-userdata=C:\temp\SandustryMP\client1
+```
+
+Logs are written beneath the specified data directory in its `logs` folder. Without `--smp-userdata`, SandustryMP uses Sandustry's default application-data log location.
 
 ## License
 
-[MIT](LICENSE) © Kamil Padula
+[MIT](LICENSE) © Cr0ss0vr

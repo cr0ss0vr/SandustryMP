@@ -290,6 +290,16 @@
    ]
   },
   {
+   "name": "building module export (_buildingMod)",
+   "critical": false,
+   "variants": [
+    {
+     "anchor": "5251(e,t,n){\"use strict\";n.d(t,{VI:()=>he,",
+     "patched": "5251(e,t,n){\"use strict\";window.SandustryMP&&(window.SandustryMP._buildingMod=t);n.d(t,{VI:()=>he,"
+    }
+   ]
+  },
+  {
    "name": "demolish module exports (pipeZn/areaL)",
    "critical": false,
    "variants": [

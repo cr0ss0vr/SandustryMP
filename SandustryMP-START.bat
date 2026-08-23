@@ -1,5 +1,5 @@
 @echo off
-title SandTogether by Kamil Padula
+title SandustryMP by Cr0ss0vr
 rem Umiesc ten plik w glownym folderze gry Sandustry (obok Sandustry.exe).
 rem Usuwa app.asar jesli Steam go odtworzyl (inaczej gra zaladuje wersje bez moda),
 rem po czym uruchamia gre.

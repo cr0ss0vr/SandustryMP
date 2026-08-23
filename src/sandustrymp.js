@@ -16,7 +16,7 @@
 			window.electron && window.electron.log && window.electron.log("info", "SandustryMP:game", line);
 		} catch (e) {}
 	};
-	const VER = "v0.1.7";
+	const VER = "v0.1.9";
 	const AUTHOR = "Cr0ss0vr";
 	const CONTRIBUTORS = "";
 	const VACUUM_CAPS = [500, 1000, 1500, 2000, 2500, 3000]; // capacity table from the game code (module 6420)
@@ -383,9 +383,9 @@
 		} else if (msg.t === "grabres") {
 			if (sandustryMP.net.role === "client") {
 				const pendingGrab = sandustryMP._grabPending;
-				if (pendingGrab && Number.isInteger(msg.q) && msg.q !== pendingGrab.q) return;
+				if (Number.isInteger(msg.q) && msg.q > 0 && (!pendingGrab || msg.q !== pendingGrab.q)) return;
 				sandustryMP._grabPending = null;
-				clientFillGrabTank(msg.types || [], msg.offs || null);
+				clientFillGrabTank(msg.types || [], msg.offs || null, msg.bx, msg.by);
 			}
 		} else if (msg.t === "grabRef") {
 			// REFUND put (R5): host failed to put item (cell busy) → put to tank
@@ -1148,7 +1148,37 @@
 	// Distinguish damaged or blocked placement from a successful placement that was immediately removed. `Available=1`, while blocked is 2 or 3.
 	// passes checks (≠FullyBlocked/≠PartiallyBlocked) and the structure is POPRAWNA → does not disappear.
 	const CLEARANCE_AVAILABLE = 1; // J6.Available w buildzie 0.5.4 (patrz enum: Available=1,FullyBlocked=2,PartiallyBlocked=3,CanBeReplaced=4)
+	const CLEARANCE_FULLY_BLOCKED = 2;
 	const CLEARANCE_PARTIALLY_BLOCKED = 3;
+	const CLEARANCE_CAN_BE_REPLACED = 4;
+	function getNativePlacementInstruction(state, structureType, x, y, replace) {
+		const buildingModule = sandustryMP._buildingMod;
+		if (!buildingModule || typeof buildingModule.K4 !== "function") return null;
+		const inputKeys = state.session && state.session.input && state.session.input.keys;
+		const buildingSession = state.session && state.session.building;
+		if (!inputKeys || !buildingSession) return null;
+		const previousControlLeft = inputKeys.ControlLeft;
+		const previousControlRight = inputKeys.ControlRight;
+		const previousStart = buildingSession.start;
+		try {
+			// Native clearance reads the replacement binding from input state. Set it
+			// only while calculating this one host-side instruction.
+			inputKeys.ControlLeft = replace ? 2 : 1;
+			inputKeys.ControlRight = 1;
+			buildingSession.start = { x, y };
+			const instructions = buildingModule.K4(state, structureType, { x, y }, { ignorePlayer: true });
+			const positions = instructions && instructions.positions;
+			if (!Array.isArray(positions)) return null;
+			return positions.find((position) => position && position.x === x && position.y === y) || positions[0] || null;
+		} catch (e) {
+			log("HOST native placement validation error:", structureType, e.message);
+			return null;
+		} finally {
+			inputKeys.ControlLeft = previousControlLeft;
+			inputKeys.ControlRight = previousControlRight;
+			buildingSession.start = previousStart;
+		}
+	}
 	function buildOne(state, s, force) {
 		try {
 			const SA = structNs(); if (!SA) return null;
@@ -1188,7 +1218,7 @@
 			// branch. This adds them to Sandustry's own queued-structure list, allowing the
 			// structure to finish naturally after the obstructing sand is removed.
 			const confirmedClearance = s.queued === true ? CLEARANCE_PARTIALLY_BLOCKED : CLEARANCE_AVAILABLE;
-			const pos = force ? { x: s.x, y: s.y, clearance: confirmedClearance } : { x: s.x, y: s.y };
+			const pos = force ? { x: s.x, y: s.y, clearance: confirmedClearance } : { x: s.x, y: s.y, ...(s.clearance != null ? { clearance: s.clearance } : {}) };
 			const buildOptions = s.data !== undefined ? { data: s.data } : {};
 			const built = SA.build(state, pos, s.type, buildOptions);
 			if (built) {
@@ -1296,7 +1326,49 @@
 	function applyWorldItems(state, list) {
 		const now = performance.now();
 		for (const [id, ts] of sandustryMP._pickedPending) if (now - ts > 10000) sandustryMP._pickedPending.delete(id);
-		state.store.worldItems = (list || []).filter((i) => !sandustryMP._pickedPending.has(i.id));
+		const desiredItems = (list || []).filter((item) => item && item.id != null && !sandustryMP._pickedPending.has(item.id));
+		const itemsApi = sandustryMP.gameApi && sandustryMP.gameApi.world && sandustryMP.gameApi.world.items;
+		if (!itemsApi || typeof itemsApi.spawn !== "function" || typeof itemsApi.destroy !== "function") {
+			state.store.worldItems = desiredItems;
+			return;
+		}
+		let currentItems = typeof itemsApi.getAll === "function" ? itemsApi.getAll(state) : state.store.worldItems;
+		if (!Array.isArray(currentItems)) currentItems = state.store.worldItems = [];
+		const firstRenderReconcile = sandustryMP._worldItemRenderState !== state;
+		if (firstRenderReconcile) sandustryMP._worldItemRenderState = state;
+		const desiredIds = new Set(desiredItems.map((item) => item.id));
+		// A transferred save can acquire world-item data before its renderer cache is
+		// registered. Recreate every item once for a new state; afterward reconcile by ID.
+		for (const localItem of [...currentItems]) {
+			if (firstRenderReconcile || !desiredIds.has(localItem.id)) {
+				try { itemsApi.destroy(state, localItem); } catch (e) {
+					const index = currentItems.indexOf(localItem); if (index >= 0) currentItems.splice(index, 1);
+				}
+			}
+		}
+		const currentById = new Map(currentItems.map((item) => [item.id, item]));
+		for (const hostItem of desiredItems) {
+			let localItem = currentById.get(hostItem.id);
+			if (!localItem || localItem.type !== hostItem.type) {
+				if (localItem) try { itemsApi.destroy(state, localItem); } catch (e) {}
+				const nextIds = state.store.meta && state.store.meta.nextId;
+				const previousNextId = nextIds && nextIds.worldItem;
+				try {
+					if (nextIds) nextIds.worldItem = hostItem.id;
+					localItem = itemsApi.spawn(state, hostItem.type, hostItem.x, hostItem.y, hostItem.data || {});
+				} catch (e) { log("CLIENT world item spawn error:", hostItem.id, e.message); }
+				finally {
+					if (nextIds) nextIds.worldItem = Math.max(Number(previousNextId) || 0, Number(nextIds.worldItem) || 0, Number(hostItem.id) + 1 || 0);
+				}
+			}
+			if (localItem) {
+				localItem.id = hostItem.id;
+				localItem.type = hostItem.type;
+				localItem.x = hostItem.x;
+				localItem.y = hostItem.y;
+				localItem.data = hostItem.data ? JSON.parse(JSON.stringify(hostItem.data)) : {};
+			}
+		}
 	}
 	// SZYBKIE DROPY (G12): the new item on the ground arrived only with a 2.5s snapshot.
 	// Host: for each ZMIANIE list, the id sends it immediately (checked at 5 Hz, sent only when changed).
@@ -1495,9 +1567,9 @@
 			// The map module caches that value during initialization, so repair both its
 			// live state and persistent storage before restoring positive unlock effects.
 			if (mapTechnologyKnown && sandustryMP._mapMod && typeof sandustryMP._mapMod.setRevealed === "function") {
-				sandustryMP._mapMod.setRevealed(state, mapTechnologyUnlocked);
 				let storedMapState = null;
 				try { storedMapState = sandustryMP.gameApi.storage.ensure(state, "map"); } catch (e) {}
+				if (!storedMapState || !!storedMapState.revealed !== mapTechnologyUnlocked) sandustryMP._mapMod.setRevealed(state, mapTechnologyUnlocked);
 				log("RESEARCH REPAIR: map technology is", mapTechnologyUnlocked ? "unlocked" : "locked", "-> map revealed=" + !!(storedMapState && storedMapState.revealed));
 			} else if (!sandustryMP._mapRepairWarningLogged) {
 				sandustryMP._mapRepairWarningLogged = true;
@@ -1514,14 +1586,16 @@
 					if (!definition || !definition.unlocks) continue;
 					const missingStructures = (definition.unlocks.structures || []).filter((structureId) => !buildings.includes(structureId));
 					const missingItems = (definition.unlocks.items || []).filter((itemId) => !ownedItemIds.has(String(itemId)));
-					const mapUnlock = definition.unlocks.map;
-					if (!missingStructures.length && !missingItems.length && !mapUnlock) continue;
+					// Map visibility was reconciled silently through _mapMod.setRevealed above.
+					// Replaying unlockTech solely for `unlocks.map` emits tech:mapUnlocked and
+					// causes the minimap unlock animation to flash on every save load.
+					if (!missingStructures.length && !missingItems.length) continue;
 					const repairDefinition = Object.assign({}, definition, {
 						cost: 0,
 						unlocks: Object.assign({}, definition.unlocks, {
 							structures: missingStructures,
 							items: missingItems,
-							map: mapUnlock
+							map: false
 						})
 					});
 					let repaired = false;
@@ -1863,6 +1937,29 @@
 		const matrixCellCount = data && data.matrix ? data.matrix.length - 2 : 1;
 		return Math.max(1, Math.min(32, Math.floor(Math.sqrt(matrixCellCount))));
 	}
+	// Sandustry stores the number of filled active slots in matrix[1] and the
+	// single accepted material type in matrix[0]. The backing matrix can be
+	// larger than the currently selected grabber area, so only active slots
+	// participate in either header value.
+	function syncGrabberTankHeader(tool, matrix) {
+		const width = getSelectedGrabberWidth(tool);
+		const activeSlots = Math.min(matrix.length - 2, width * width);
+		let filledSlots = 0;
+		let firstType = 0;
+		for (let slot = 0; slot < activeSlots; slot++) {
+			const elementType = matrix[slot + 2] | 0;
+			if (!elementType) continue;
+			filledSlots++;
+			if (!firstType) firstType = elementType;
+		}
+		// Material outside the selected window is invisible to the native tool.
+		// Clear stale cells left by older versions so they cannot reappear after
+		// changing the selection size.
+		for (let slot = activeSlots + 2; slot < matrix.length; slot++) matrix[slot] = 0;
+		matrix[1] = filledSlots;
+		matrix[0] = filledSlots ? firstType : 0;
+		return { width, activeSlots, filledSlots };
+	}
 	// Match Sandustry's `$` helper exactly: start at the cursor cell, then visit
 	// successive Chebyshev rings. For even sizes the native helper generates the
 	// outer positive edge too and discards coordinates outside the matrix.
@@ -1888,12 +1985,14 @@
 			if (!isClientSync() || !sandustryMP.wsx.paused) return false; // host/offline or client outside the host world
 			const B = tool && tool.data && tool.data.matrix;
 			if (!B) return false;
+			const tankState = syncGrabberTankHeader(tool, B);
+			if (tankState.filledSlots >= tankState.activeSlots) return false;
 			// Collect only while the player actively holds the grab control (`action.state[qy.Active] === 2`).
 			// Continuous forwarding previously collected falling elements without user input.
 			const ast = state.session && state.session.action && state.session.action.state;
 			if (!ast || !ast[2]) return false; // no action → let z() do hover (no download)
 			const now = performance.now();
-			if (now - (sandustryMP._lastGrabH || 0) > 100) {
+			if (now - (sandustryMP._lastGrabH || 0) > 33) {
 				const pendingGrab = sandustryMP._grabPending;
 				if (pendingGrab && now - pendingGrab.time < 1500) return true;
 				sandustryMP._grabPending = null;
@@ -1904,7 +2003,7 @@
 					// `matrix` is allocated to the maximum upgraded capacity; `data.size` is the
 					// currently selected area. Counting the entire allocation made a selected 5x5
 					// grabber harvest a 7x7 area on the host.
-					const grabberSize = getSelectedGrabberWidth(tool);
+					const grabberSize = tankState.width;
 					const selectedCellCount = grabberSize * grabberSize;
 					const freeSlots = [];
 					for (let i = 2; i < Math.min(B.length, selectedCellCount + 2); i++) if (B[i] === 0) freeSlots.push(i - 2);
@@ -1922,6 +2021,25 @@
 			return true; // skip local collection (host will do it authoritatively)
 		} catch (e) { return false; }
 	};
+	// Merged particles expose the technical Particle type through elementType.
+	// Native grabber behavior follows linkedElementIndex to the underlying
+	// material, such as gold, before applying the tank type lock.
+	function resolveGrabberElementType(state, info) {
+		let elementType = info && info.elementType ? info.elementType | 0 : 0;
+		try {
+			if (info && info.isParticle && Number.isInteger(info.elementIndex)) {
+				const elementData = state.shared && state.shared.sim && state.shared.sim.elementData;
+				const linkedIndex = elementData && elementData.linkedElementIndex
+					? elementData.linkedElementIndex[info.elementIndex]
+					: -1;
+				if (linkedIndex >= 0 && elementData && elementData.type) {
+					const resolvedType = elementData.type[linkedIndex] | 0;
+					if (resolvedType > 0) elementType = resolvedType;
+				}
+			}
+		} catch (e) {}
+		return elementType;
+	}
 	// HOST: collect grabbable elements in radius around (x,y), remove, send types back to client (like vacuum).
 	function hostHarvestGrab(msg, fromId) {
 		const state = sandustryMP.state;
@@ -1929,7 +2047,7 @@
 		// rate-limit per player (the client limits itself to 100ms, but the host cannot trust the client)
 		if (!sandustryMP._grabHLast) sandustryMP._grabHLast = new Map();
 		const tNow = performance.now();
-		if (tNow - (sandustryMP._grabHLast.get(fromId) || 0) < 80) return;
+		if (tNow - (sandustryMP._grabHLast.get(fromId) || 0) < 30) return;
 		sandustryMP._grabHLast.set(fromId, tNow);
 		const el = sandustryMP.gameApi.elements || {};
 		const getInfo = el.getInfoAtPos;
@@ -1980,31 +2098,34 @@
 				const info = getInfo(state, x, y);
 				if (!info || !info.elementType) continue;
 				if (info.isGrabbable === false) continue; // respect the flag when there is one; when there is no supply - take it (the client aimed)
-				const cfg = el.getConfig ? el.getConfig(info.elementType) : null;
+				const resolvedType = resolveGrabberElementType(state, info);
+				if (!resolvedType) continue;
+				const cfg = el.getConfig ? el.getConfig(resolvedType) : null;
 				if (cfg && cfg.isGrabbable === false) continue;
 				if (sandustryMP._mtLiquid !== null && cfg && cfg.matterType === sandustryMP._mtLiquid && !canLiquid) { gateSkipped++; continue; } // liquid without waterGrab testing
-				if (lockType && info.elementType !== lockType) continue; // tank only accepts JEDEN type (like vanilla)
-				if (!lockType) lockType = info.elementType;
+				if (lockType && resolvedType !== lockType) continue; // tank accepts one resolved material type
+				if (!lockType) lockType = resolvedType;
 				removeAt(state, x, y);
 				markCellDirty(state, x, y);
-				types.push(info.elementType);
+				types.push(resolvedType);
 				offs.push(dx, dy); // position relative cursor → the client maps to the appropriate tank grid slot
 				taken++;
 			} catch (e) {}
 		}
-		net.send({ t: "grabres", q: Number.isInteger(msg.q) ? msg.q : 0, types, offs }, fromId);
+		net.send({ t: "grabres", q: Number.isInteger(msg.q) ? msg.q : 0, types, offs, bx: msg.x, by: msg.y }, fromId);
 		if (types.length) { if ((sandustryMP._grabHostDiag = (sandustryMP._grabHostDiag || 0) + 1) <= 40) log("HOST grabH @", msg.x, msg.y, "size=" + grabberSize + "x" + grabberSize, "collected", types.length, "elements" + (gateSkipped ? " (omitted " + gateSkipped + " fluids - no waterGrab)" : "")); }
 		else if (gateSkipped && (sandustryMP._grabGateDiag = (sandustryMP._grabGateDiag || 0) + 1) <= 10) log("HOST grabH: collected 0 elements;", gateSkipped, "fluids blocked (no waterGrab upgrade)");
 	}
 	// Client: populate the grabber tank matrix with host-confirmed types. `B[0]` is the locked type, `B[1]` the count, and `B[2..]` the slots.
-	function clientFillGrabTank(types, offs) {
+	function clientFillGrabTank(types, offs, baseX, baseY) {
 		const tool = sandustryMP._grabTool;
 		const B = tool && tool.data && tool.data.matrix;
 		if (!B || !types || !types.length) return;
+		const tankState = syncGrabberTankHeader(tool, B);
 		// SLOT According to POZYCJI (fix TCentraL: items landed in the upper left corner of the picker): the tank grid is
 		// spatial - slot corresponds to the position of the cell relative to the cursor (vanilla: A = w + t*v). Host
 		// Sends offsets `(dx,dy)`; slot = `(dx+mid) + (dy+mid)*v`. Occupied or out of range uses the first free slot.
-		const v = getSelectedGrabberWidth(tool);
+		const v = tankState.width;
 		const selectedCellCount = v * v;
 		const mid = v >> 1;
 		let filledAny = false;
@@ -2021,9 +2142,21 @@
 			// Older hosts did not include positional offsets. Retain their sequential
 			// compatibility behavior, but never relocate a position-aware response.
 			if (!filled && (!offs || offs.length < (ti2 + 1) * 2)) for (let i = 2; i < Math.min(B.length, selectedCellCount + 2); i++) { if (B[i] === 0) { B[i] = ty; B[1] = (B[1] || 0) + 1; if (!B[0]) B[0] = ty; filled = true; filledAny = true; break; } }
-			if (!filled) break; // tank full
+			if (!filled) {
+				// The host has already removed this material. Never relocate a
+				// position-aware response into an unrelated free tank slot; return it
+				// to the exact world cell from which it was collected instead.
+				if (Number.isFinite(baseX) && Number.isFinite(baseY) && offs && offs.length >= (ti2 + 1) * 2) {
+					try {
+						net.send({ t: "act", k: "grabPlace", x: (baseX + offs[ti2 * 2]) | 0, y: (baseY + offs[ti2 * 2 + 1]) | 0, et: ty });
+					} catch (e) { log("CLIENT failed to return unstored grabber material:", ty, e.message); }
+				} else {
+					log("CLIENT could not store or return grabber material:", ty);
+				}
+			}
 		}
-		if (filledAny && (sandustryMP._grabFillDiag = (sandustryMP._grabFillDiag || 0) + 1) <= 20) log("CLIENT grabber tank filled with:", types.length, "types, count=" + B[1]);
+		const repairedTank = syncGrabberTankHeader(tool, B);
+		if (filledAny && (sandustryMP._grabFillDiag = (sandustryMP._grabFillDiag || 0) + 1) <= 20) log("CLIENT grabber tank filled with:", types.length, "types, count=" + repairedTank.filledSlots);
 	}
 
 	// Flamethrower/cryoblaster: we queue cells (many/tick) and send in batches every ~60ms - we do not flood the network.
@@ -2335,9 +2468,20 @@
 				const buildingUnlocked = msg.type != null && canHostPlaceStructure(state, msg.type);
 				try {
 					if (buildingUnlocked && Number.isFinite(msg.x) && Number.isFinite(msg.y)) {
-						// Do not pre-remove an occupied structure. Native build owns clearance and
-						// replacement validation; a failed request must leave the old structure intact.
-						built = buildOne(state, { type: msg.type, x: msg.x, y: msg.y, data: msg.data || undefined, filter: msg.filter || undefined }, false);
+						const instruction = getNativePlacementInstruction(state, msg.type, msg.x, msg.y, msg.replace === true);
+						if (instruction && instruction.clearance !== CLEARANCE_FULLY_BLOCKED) {
+							const structuresApi = structNs();
+							if (instruction.clearance === CLEARANCE_CAN_BE_REPLACED) {
+								const existing = structuresApi && structuresApi.getAtCell(state, instruction.x, instruction.y);
+								if (existing) {
+									replaced = slimStruct(existing);
+									// This is the same order as Sandustry's native single-placement
+									// pipeline: clearance first, then native removal, then native build.
+									structuresApi.removeAt(state, instruction.x, instruction.y, { removeCells: true, skipWorkerSync: false });
+								}
+							}
+							built = buildOne(state, { type: msg.type, x: instruction.x, y: instruction.y, clearance: instruction.clearance, data: msg.data || undefined, filter: msg.filter || undefined }, false);
+						}
 					}
 				} finally { sandustryMP._applyingNet = false; }
 				if (!buildingUnlocked) log("HOST rejected placement of locked building:", msg.type, "from", fromId);

@@ -1,4 +1,4 @@
-# Co-op architecture plan — SandTogether
+# Co-op architecture plan — SandustryMP
 
 *Translated from the original Polish notes.*
 
@@ -27,7 +27,7 @@ Date: 2026-08-16. Based on: REKONESANS.md, MAPA_BUNDLE.md, MAPA_WORKERY.md.
 ## Mod structure (Fluxloader)
 
 ```
-sandtogether/
+sandustrymp/
   modinfo.json          # modID, entrypoints, configSchema (port, nick, host/join)
   entry.electron.js     # main process: WebSocket server/client, Steam P2P (v2), relay IPC
   entry.game.js         # renderer: input/player:moved/frame:update hooks, ghost rendering,

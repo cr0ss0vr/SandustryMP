@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================================
-# SandTogether — Linux installer wrapper. Run: bash install-linux.sh
+# SandustryMP — Linux installer wrapper. Run: bash install-linux.sh
 # No Node.js required: uses the game's own Electron binary as the runtime.
 # Optional argument: path to the Sandustry game folder (for exotic setups).
 # ============================================================================
@@ -8,7 +8,7 @@
 # and bash died on "set: pipefail\r"). This single line is safe even WITH CRLF (it ends in a
 # comment, so the stray \r is swallowed) and re-runs a cleaned copy of the script. It also
 # rescues people who run "sh install-linux.sh" — the re-exec always uses bash.
-if [ -z "${ST_DIR:-}" ]; then ST_DIR="$(cd "$(dirname "$0")" && pwd)"; export ST_DIR; tr -d '\r' <"$0" >"/tmp/sandtogether-install-$$.sh"; exec bash "/tmp/sandtogether-install-$$.sh" "$@"; fi # crlf-guard
+if [ -z "${ST_DIR:-}" ]; then ST_DIR="$(cd "$(dirname "$0")" && pwd)"; export ST_DIR; tr -d '\r' <"$0" >"/tmp/sandustrymp-install-$$.sh"; exec bash "/tmp/sandustrymp-install-$$.sh" "$@"; fi # crlf-guard
 set -euo pipefail
 DIR="${ST_DIR:-$(cd "$(dirname "$0")" && pwd)}"
 
@@ -55,7 +55,7 @@ if [ -z "${GAME:-}" ] || [ ! -d "$GAME/resources" ]; then
 fi
 
 BIN="$(find_bin "$GAME")"
-echo "=== SandTogether installer (Linux) ==="
+echo "=== SandustryMP installer (Linux) ==="
 echo "Game: $GAME"
 if [ -n "${BIN:-}" ]; then
   echo "Runtime: $BIN (the game's own Electron)"
