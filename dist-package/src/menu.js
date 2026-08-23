@@ -74,6 +74,25 @@
 		}
 		return branch;
 	}
+	function nativeMenuLabelMetrics(control) {
+		const controlBounds = control.getBoundingClientRect();
+		const expectedText = (control.textContent || "").trim();
+		const walker = document.createTreeWalker(control, NodeFilter.SHOW_TEXT);
+		while (walker.nextNode()) {
+			const textNode = walker.currentNode;
+			if ((textNode.nodeValue || "").trim() !== expectedText) continue;
+			const range = document.createRange();
+			range.selectNodeContents(textNode);
+			const textBounds = range.getBoundingClientRect();
+			return {
+				style: getComputedStyle(control),
+				leftInset: Math.max(0, Math.round(textBounds.left - controlBounds.left) - 4),
+				topInset: textBounds.top - controlBounds.top,
+				textNode
+			};
+		}
+		return { style: getComputedStyle(control), leftInset: 11, topInset: 0, textNode: null };
+	}
 	function cloneNativeMenuRow(sourceBranch, sourceControl) {
 		const clone = sourceBranch.cloneNode(true);
 		clone.id = "smp-mp-btn";
@@ -101,6 +120,11 @@
 			delete element.dataset.smpMenuSpaced;
 			delete element.dataset.smpOriginalMarginTop;
 		}
+		for (const element of document.querySelectorAll("[data-smp-menu-padded]")) {
+			element.style.paddingTop = element.dataset.smpOriginalPaddingTop || "";
+			delete element.dataset.smpMenuPadded;
+			delete element.dataset.smpOriginalPaddingTop;
+		}
 	}
 	function addMenuRowSpace(row, amount) {
 		if (!row) return;
@@ -108,6 +132,21 @@
 		row.dataset.smpMenuSpaced = "1";
 		const currentMargin = parseFloat(getComputedStyle(row).marginTop) || 0;
 		row.style.marginTop = currentMargin + amount + "px";
+	}
+	function alignMenuRowLabelTop(row, labelMetrics, desiredTop) {
+		if (!row || !labelMetrics || !labelMetrics.textNode) return;
+		const range = document.createRange();
+		range.selectNodeContents(labelMetrics.textNode);
+		const correction = desiredTop - range.getBoundingClientRect().top;
+		if (Math.abs(correction) < 0.5) return;
+		row.style.marginTop = (parseFloat(row.style.marginTop) || 0) + correction + "px";
+	}
+	function addCompactMenuRowPadding(row, amount) {
+		if (!row || amount <= 0) return;
+		row.dataset.smpOriginalPaddingTop = row.style.paddingTop || "";
+		row.dataset.smpMenuPadded = "1";
+		const currentPadding = parseFloat(getComputedStyle(row).paddingTop) || 0;
+		row.style.paddingTop = currentPadding + amount + "px";
 	}
 	function shiftMenuButtonsBelow(anchorButton, amount) {
 		const anchorBounds = anchorButton.getBoundingClientRect();
@@ -184,7 +223,12 @@
 			btn.id = "smp-mp-btn";
 			btn.dataset.smpFixedMenuClone = "4";
 			const face = document.createElement("div");
-			face.className = "relative left-0 w-full overflow-hidden px-3 text-3xl leading-10 tracking-[0.06em] text-white transition-all duration-300 pointer-events-none active:bg-opacity-75";
+			face.className = "relative left-0 w-full overflow-hidden text-white transition-all duration-300 pointer-events-none active:bg-opacity-75";
+			face.style.display = "flex";
+			face.style.alignItems = "center";
+			face.style.width = "100%";
+			face.style.height = "100%";
+			face.style.boxSizing = "border-box";
 			face.style.borderRadius = "0 8px 0 8px";
 			face.style.boxShadow = "0 4px 12px rgba(0, 0, 0, 0.28)";
 			const firstLetter = document.createElement("span");
@@ -221,10 +265,22 @@
 		const buttonBounds = targetBounds || styleBounds;
 		const visibleButtonWidth = Math.max(160, Math.round(buttonBounds.width));
 		const visibleButtonHeight = Math.max(30, Math.round(buttonBounds.height));
+		const nativeLabel = nativeMenuLabelMetrics(styleControl);
+		const targetLabel = targetControl ? nativeMenuLabelMetrics(targetControl) : null;
+		const nativeTypography = nativeLabel.style;
+		const nativeLeftInset = Math.max(6, Math.round(visibleButtonHeight * 0.28));
 		let buttonTop;
 		if (targetControl && targetRow && targetBounds) {
-			buttonTop = targetBounds.top;
+			const compactTopGap = !continueControl
+				? Math.max(0, Math.min(2, Math.round((220 - visibleButtonWidth) * 0.02)))
+				: 0;
+			buttonTop = continueControl && newControl
+				? continueControl.getBoundingClientRect().bottom + standardGap
+				: newControl.getBoundingClientRect().bottom + standardGap + compactTopGap;
 			addMenuRowSpace(targetRow, visibleButtonHeight + standardGap);
+			alignMenuRowLabelTop(targetRow, targetLabel, buttonTop + visibleButtonHeight + standardGap + targetLabel.topInset);
+			const compactPadding = Math.max(0, Math.min(15, Math.round((220 - visibleButtonWidth) * 0.29)));
+			addCompactMenuRowPadding(targetRow, compactPadding);
 		} else {
 			const modsBounds = modsControl && modsControl.getBoundingClientRect();
 			const mapsBounds = mapsControl && mapsControl.getBoundingClientRect();
@@ -253,6 +309,18 @@
 		btn.style.top = Math.round(buttonTop) + "px";
 		btn.style.width = visibleButtonWidth + "px";
 		btn.style.height = visibleButtonHeight + "px";
+		// Match the native menu's responsive typography instead of pinning the
+		// Multiplayer label to a desktop-sized Tailwind font and line height.
+		if (btn._smpFace) {
+			btn._smpFace.style.fontFamily = nativeTypography.fontFamily;
+			btn._smpFace.style.fontSize = Math.max(12, Math.round(visibleButtonHeight * 0.72)) + "px";
+			btn._smpFace.style.fontWeight = nativeTypography.fontWeight;
+			btn._smpFace.style.lineHeight = "1";
+			btn._smpFace.style.letterSpacing = nativeTypography.letterSpacing;
+			btn._smpFace.style.paddingLeft = nativeLeftInset + "px";
+			btn._smpFace.style.paddingRight = nativeLeftInset + "px";
+			btn._smpFace.style.textTransform = nativeTypography.textTransform;
+		}
 		// Keep connection state visible without opening the lobby (TCentraL: "no real way to know if
 		// you're connected") - green dot and frame when you are hosting/connected
 		const conn = sandustryMP.net.role !== "idle";

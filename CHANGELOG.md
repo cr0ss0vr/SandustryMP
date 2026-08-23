@@ -2,6 +2,11 @@
 
 All notable changes to SandustryMP are recorded here. Dates use the ISO `YYYY-MM-DD` format.
 
+## v0.2.2 - 2026-08-23
+
+- Made the Multiplayer main-menu label use the base game's responsive typography so it scales correctly at lower screen resolutions.
+- Made the Multiplayer row spacing and padding respond to the native menu size without overlapping adjacent controls.
+
 ## v0.2.1 - 2026-08-23
 
 - Preserved native directional structure variants during client placement, including cardinal-only and eight-direction buildings.
