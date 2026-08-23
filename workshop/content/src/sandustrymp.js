@@ -16,7 +16,7 @@
 			window.electron && window.electron.log && window.electron.log("info", "SandustryMP:game", line);
 		} catch (e) {}
 	};
-	const VER = "v0.2.3";
+	const VER = "v0.2.4";
 	const AUTHOR = "Cr0ss0vr";
 	const CONTRIBUTORS = "";
 	const VACUUM_CAPS = [500, 1000, 1500, 2000, 2500, 3000]; // capacity table from the game code (module 6420)
@@ -1165,6 +1165,85 @@
 		}
 		if (!sandustryMP._structNsWarned) { sandustryMP._structNsWarned = true; log("ERROR: did not find structures API (build/removeAt/getAtCell):", Object.keys(gameApi).join(",")); }
 		return null;
+	}
+
+	// Capture the exact live cells owned by a structure before demolition. This avoids
+	// reconstructing an angled/slanted foundation footprint from the user's drag rectangle
+	// after the structure has already disappeared from the registry. Eight-way traversal is
+	// intentional: rasterized slants can connect diagonally.
+	function captureStructureCells(state, structuresApi, structure, seedX, seedY) {
+		const { width, height } = worldBuffers(state);
+		if (!structuresApi || !structure || !width || !height) return [];
+		const result = [];
+		const queue = [[seedX, seedY]];
+		const seen = new Set();
+		const LIMIT = 512; // runaway/corruption guard; normal foundations are far smaller
+		while (queue.length && result.length < LIMIT) {
+			const point = queue.pop();
+			const x = point[0], y = point[1];
+			if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x >= width || y >= height) continue;
+			const key = x + "," + y;
+			if (seen.has(key)) continue;
+			seen.add(key);
+			let owner = null;
+			try { owner = structuresApi.getAtCell(state, x, y); } catch (e) { continue; }
+			if (owner !== structure) continue;
+			result.push([x, y]);
+			for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+				if (!dx && !dy) continue;
+				queue.push([x + dx, y + dy]);
+			}
+		}
+		if (result.length >= LIMIT) log("Demolition footprint capture hit limit for", structKey(structure), "seed", seedX, seedY);
+		return result;
+	}
+
+	// Orphaned structure terrain can survive a demolition even when no later tool
+	// action occurs in that area. Sweep the authoritative world incrementally and
+	// require the same unowned cell to survive a second check before removing it.
+	function sweepOrphanTerrainIfDue(state, now) {
+		if (isClientSync() || !state.store || !state.store.scene || state.store.scene.active === 1) return;
+		if (now - (sandustryMP._orphanSweepT || 0) < 250) return;
+		sandustryMP._orphanSweepT = now;
+		const sharedState = state.shared || {};
+		const simc = sharedState.sim && sharedState.sim.cellIds;
+		const terrainTypes = sharedState.sim && sharedState.sim.terrainType;
+		const terrainsApi = sandustryMP.gameApi && sandustryMP.gameApi.terrains;
+		const structuresApi = structNs();
+		const { width, height } = worldBuffers(state);
+		if (!simc || !terrainTypes || !terrainsApi || !terrainsApi.removeAt || !structuresApi || !width || !height) return;
+		const worldKey = ((state.store.meta && state.store.meta.worldId) || "unknown") + ":" + width + "x" + height;
+		if (sandustryMP._orphanSweepWorld !== worldKey) {
+			sandustryMP._orphanSweepWorld = worldKey;
+			sandustryMP._orphanSweepCursor = 0;
+			sandustryMP._orphanCandidates = new Map();
+		}
+		const sim = new Uint32Array(simc.buffer, simc.byteOffset, simc.length);
+		const candidates = sandustryMP._orphanCandidates || (sandustryMP._orphanCandidates = new Map());
+		const isUnownedFoundation = (index) => {
+			const cellId = sim[index];
+			if (cellId <= 0 || cellId > 1000 || !STRUCTURE_TERRAIN_TYPES.has(terrainTypes[cellId])) return false;
+			const x = index % width, y = Math.floor(index / width);
+			try { return !structuresApi.getAtCell(state, x, y); } catch (e) { return false; }
+		};
+		let cleaned = 0, checked = 0;
+		for (const [index, firstSeen] of candidates) {
+			if (checked++ >= 256) break;
+			if (now - firstSeen < 1200) continue;
+			candidates.delete(index);
+			if (!isUnownedFoundation(index)) continue;
+			const x = index % width, y = Math.floor(index / width);
+			try { terrainsApi.removeAt(state, x, y); markCellDirty(state, x, y); cleaned++; } catch (e) {}
+		}
+		const cellCount = Math.min(sim.length, width * height);
+		let cursor = sandustryMP._orphanSweepCursor || 0;
+		for (let scanned = 0; scanned < 8192 && scanned < cellCount; scanned++) {
+			const index = cursor++;
+			if (cursor >= cellCount) cursor = 0;
+			if (isUnownedFoundation(index) && !candidates.has(index)) candidates.set(index, now);
+		}
+		sandustryMP._orphanSweepCursor = cursor;
+		if (cleaned) log("Automatic orphan cleanup: removed", cleaned, "unowned foundation tiles");
 	}
 	// force=true is reserved for rendering structures already confirmed by the host on paused clients.
 	// It skips collision checks by explicitly specifying clearance = Available. IMPORTANT (0.5.4): former
@@ -2547,11 +2626,23 @@
 				const hostTargets = new Map();
 				for (let y = Math.floor(msg.rect.y0); y <= Math.ceil(msg.rect.y1); y++) for (let x = Math.floor(msg.rect.x0); x <= Math.ceil(msg.rect.x1); x++) {
 					const structure = structuresApi && structuresApi.getAtCell(state, x, y);
-					if (structure) hostTargets.set(structKey(structure), structure);
+					if (structure) {
+						const key = structKey(structure);
+						if (!hostTargets.has(key)) hostTargets.set(key, { structure, hitX: x, hitY: y });
+					}
 				}
-				const removed = [...hostTargets.values()].map(slimStruct);
+				const removed = [];
+				const cleanupCells = [];
+				const cleanupCellKeys = new Set();
+				for (const target of hostTargets.values()) {
+					removed.push(slimStruct(target.structure));
+					for (const cell of captureStructureCells(state, structuresApi, target.structure, target.hitX, target.hitY)) {
+						const cellKey = cell[0] + "," + cell[1];
+						if (!cleanupCellKeys.has(cellKey)) { cleanupCellKeys.add(cellKey); cleanupCells.push(cell); }
+					}
+				}
 				sandustryMP._applyingNet = true;
-				try { for (const structure of hostTargets.values()) structuresApi.removeAt(state, structure.x, structure.y, {}); } finally { sandustryMP._applyingNet = false; }
+				try { for (const target of hostTargets.values()) structuresApi.removeAt(state, target.structure.x, target.structure.y, {}); } finally { sandustryMP._applyingNet = false; }
 				if (removed.length) net.send({ t: "st", k: "rm", list: removed });
 				// Fix (DwoaC): orphan-tile cleanup was armed only for host demolition.
 				// The client's demolition left red tiles. Uzbrajamy go bounding-box list (±2).
@@ -2565,8 +2656,8 @@
 					const r = msg.rect;
 					const exact = r && [r.x0, r.y0, r.x1, r.y1].every(Number.isFinite) && r.x1 >= r.x0 && r.y1 >= r.y0 && (r.x1 - r.x0 + 1) * (r.y1 - r.y0 + 1) <= 40000;
 					sandustryMP._hostDemolRect = exact
-						? { x0: Math.floor(r.x0), y0: Math.floor(r.y0), x1: Math.ceil(r.x1), y1: Math.ceil(r.y1), t: performance.now(), cleanOrphans: true }
-						: { x0: x0, y0: y0, x1: x1 + 2, y1: y1 + 2, t: performance.now(), src: "client" };
+						? { x0: Math.floor(r.x0), y0: Math.floor(r.y0), x1: Math.ceil(r.x1), y1: Math.ceil(r.y1), t: performance.now(), cleanOrphans: true, cleanupCells }
+						: { x0: x0, y0: y0, x1: x1 + 2, y1: y1 + 2, t: performance.now(), src: "client", cleanupCells };
 				}
 			} else if (msg.k === "upg") {
 				// customer upgrade purchase (common pool): set level + subtract cost authoritatively
@@ -3601,6 +3692,7 @@
 			sendEntitiesIfDue(state);
 			sendWorldItemsIfChanged(state); // szybkie dropy (G12)
 		}
+		sweepOrphanTerrainIfDue(state, now);
 		// Dobijanie after demolition (see _demol): 250ms after dragging, check whether there are any
 		// structures missed by the game (tiles stuck in QUEUED) and remove them by SA.removeAt.
 		// This cleanup runs for both host and solo modes because jammed blocks persist in saves.
@@ -3625,6 +3717,37 @@
 							// before an infinite loop with an effectively unremovable structure.
 							if ((hd.retry || 0) < 6) sandustryMP._hostDemolRect = { ...hd, t: performance.now(), retry: (hd.retry || 0) + 1 };
 						}
+						// First clean the exact footprint captured while each target structure was still live.
+						// This is the authoritative path for angled/slanted foundations: cells behind the
+						// drag start are still known even though they lie outside the user's rectangle.
+						if (Array.isArray(hd.cleanupCells) && hd.cleanupCells.length) try {
+							const sharedState = state.shared || {};
+							const simc = sharedState.sim && sharedState.sim.cellIds;
+							const tt = sharedState.sim && sharedState.sim.terrainType;
+							const TR = sandustryMP.gameApi && sandustryMP.gameApi.terrains;
+							const { width: W, height: H } = worldBuffers(state);
+							if (simc && tt && TR && TR.removeAt && W && H) {
+								const sim = new Uint32Array(simc.buffer, simc.byteOffset, simc.length);
+								let cleanedCaptured = 0;
+								for (const cell of hd.cleanupCells) {
+									if (!Array.isArray(cell) || cell.length < 2) continue;
+									const x = cell[0], y = cell[1];
+									if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || y < 0 || x >= W || y >= H) continue;
+									let owner = null;
+									try { owner = SA.getAtCell(state, x, y); } catch (e) { continue; }
+									if (owner) continue;
+									const cellId = sim[x + y * W];
+									const terrainType = cellId > 0 && cellId <= 1000 ? tt[cellId] : null;
+									if (cellId > 0 && cellId <= 1000 && STRUCTURE_TERRAIN_TYPES.has(terrainType)) {
+										try { TR.removeAt(state, x, y); markCellDirty(state, x, y); cleanedCaptured++; } catch (e) {}
+									} else if (cellId > 0 && (sandustryMP._orphanDiagCount = (sandustryMP._orphanDiagCount || 0) + 1) <= 80) {
+										log("ORPHAN DEBUG captured cell", x, y, "cellId=", cellId, "terrainType=", terrainType, "knownStructureTerrain=", STRUCTURE_TERRAIN_TYPES.has(terrainType), "owner=", false);
+									}
+								}
+								if (cleanedCaptured) log("Demolition cleanup: removed", cleanedCaptured, "foundation cells from captured structure footprint");
+							}
+						} catch (e) { log("CAPTURED FOOTPRINT CLEANUP ERROR:", e.message); }
+
 						// Orphaned tiles ("red bricks"): the structure no longer exists (`getAtCell` is null), but its tiles remain.
 						// "clean" with visible blocks!), but structure-owned terrain cells can be removed safely.
 						// Orphaned tiles remain because game demolition clears cells only while removing a live structure.
@@ -3649,6 +3772,7 @@
 								// foundation cannot eat it), (3) without mutating y in the middle of the loop (it lost blobs),
 								// (4) expansion limit of 64 cells from seed (no marathon across the entire map).
 								const isOrphanTile = (xx, yy) => {
+									if (xx < 0 || yy < 0 || xx >= W || yy >= H) return false;
 									const n = sim[xx + yy * W];
 									if (n <= 0 || n > 1000) return false;
 									const terrainType = tt[n];
