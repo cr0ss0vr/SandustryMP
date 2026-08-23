@@ -2,6 +2,10 @@
 
 All notable changes to SandustryMP are recorded here. Dates use the ISO `YYYY-MM-DD` format.
 
+## v0.2.1 - 2026-08-23
+
+- Preserved native directional structure variants during client placement, including cardinal-only and eight-direction buildings.
+
 ## v0.2.0 - 2026-08-23
 
 - Kept mirrored clients paused throughout automatic saves and immediately reasserted the worker pause when saving finished.

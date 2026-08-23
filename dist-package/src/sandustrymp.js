@@ -16,7 +16,7 @@
 			window.electron && window.electron.log && window.electron.log("info", "SandustryMP:game", line);
 		} catch (e) {}
 	};
-	const VER = "v0.2.0";
+	const VER = "v0.2.1";
 	const AUTHOR = "Cr0ss0vr";
 	const CONTRIBUTORS = "";
 	const VACUUM_CAPS = [500, 1000, 1500, 2000, 2500, 3000]; // capacity table from the game code (module 6420)
@@ -1177,7 +1177,7 @@
 	const CLEARANCE_CAN_BE_REPLACED = 4;
 	function getNativePlacementInstruction(state, structureType, x, y, replace) {
 		const buildingModule = sandustryMP._buildingMod;
-		if (!buildingModule || typeof buildingModule.K4 !== "function") return null;
+		if (!buildingModule) return null;
 		const inputKeys = state.session && state.session.input && state.session.input.keys;
 		const buildingSession = state.session && state.session.building;
 		if (!inputKeys || !buildingSession) return null;
@@ -1189,6 +1189,16 @@
 			// only while calculating this one host-side instruction.
 			inputKeys.ControlLeft = replace ? 2 : 1;
 			inputKeys.ControlRight = 1;
+			// The placement hook runs after Sandustry has resolved direction into a
+			// registered structure variant. Validate that exact variant instead of
+			// rerunning directional selection with the host's unrelated cursor.
+			if (typeof buildingModule.Ic === "function" && typeof buildingModule.b8 === "function") {
+				const structureConfig = buildingModule.Ic(structureType);
+				if (!structureConfig || structureConfig.structureType == null) return null;
+				const clearance = buildingModule.b8(state, x, y, structureConfig, { ignorePlayer: true });
+				return { x, y, structureType: structureConfig.structureType, clearance };
+			}
+			if (typeof buildingModule.K4 !== "function") return null;
 			buildingSession.start = { x, y };
 			const instructions = buildingModule.K4(state, structureType, { x, y }, { ignorePlayer: true });
 			const positions = instructions && instructions.positions;
@@ -1645,7 +1655,10 @@
 			if (structureType === 17 || structureType === 18) return "native:filter";
 			return "native:" + structureType;
 		}
-		return "named:" + String(structureType).replace(/(left|right|up|down)$/i, "").toLowerCase();
+		// Directional mod structures use a registered type per facing. Compound
+		// variants such as `kineticFieldEmitterDownRight` must share the unlock
+		// family of their base structure.
+		return "named:" + String(structureType).replace(/(?:left|right|up|down)+$/i, "").toLowerCase();
 	}
 	function technologyControlledStructureFamilies() {
 		const families = new Set();
@@ -2504,7 +2517,7 @@
 									structuresApi.removeAt(state, instruction.x, instruction.y, { removeCells: true, skipWorkerSync: false });
 								}
 							}
-							built = buildOne(state, { type: msg.type, x: instruction.x, y: instruction.y, clearance: instruction.clearance, data: msg.data || undefined, filter: msg.filter || undefined }, false);
+							built = buildOne(state, { type: instruction.structureType, x: instruction.x, y: instruction.y, clearance: instruction.clearance, data: msg.data || undefined, filter: msg.filter || undefined }, false);
 						}
 					}
 				} finally { sandustryMP._applyingNet = false; }
