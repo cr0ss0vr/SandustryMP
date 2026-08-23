@@ -16,7 +16,7 @@
 			window.electron && window.electron.log && window.electron.log("info", "SandustryMP:game", line);
 		} catch (e) {}
 	};
-	const VER = "v0.1.9";
+	const VER = "v0.2.0";
 	const AUTHOR = "Cr0ss0vr";
 	const CONTRIBUTORS = "";
 	const VACUUM_CAPS = [500, 1000, 1500, 2000, 2500, 3000]; // capacity table from the game code (module 6420)
@@ -390,6 +390,28 @@
 		} else if (msg.t === "grabRef") {
 			// REFUND put (R5): host failed to put item (cell busy) → put to tank
 			if (sandustryMP.net.role === "client" && typeof msg.et === "number" && msg.et > 0) clientFillGrabTank([msg.et], null);
+		} else if (msg.t === "redirty") {
+			// A client save can briefly resume its simulation worker. Forget the
+			// corresponding host row hashes so those chunks are sent again even if
+			// their canonical host contents have not changed since the last batch.
+			if (sandustryMP.net.role === "host" && typeof msg.m === "string" && sandustryMP.state) {
+				try {
+					const dirtyMask = decodeBase64(msg.m);
+					const { width, height } = worldBuffers(sandustryMP.state);
+					const chunkGrid = chunkDims(width, height);
+					const hostChunkCount = chunkGrid.cx * chunkGrid.cy;
+					const reportedCount = Number.isInteger(msg.n) && msg.n > 0 ? msg.n : hostChunkCount;
+					const checkedCount = Math.min(hostChunkCount, reportedCount, dirtyMask.length * 8);
+					let queuedCount = 0;
+					for (let chunkIndex = 0; chunkIndex < checkedCount; chunkIndex++) {
+						if (!(dirtyMask[chunkIndex >> 3] & (1 << (chunkIndex & 7)))) continue;
+						if (sandustryMP.wsx.rowH) sandustryMP.wsx.rowH.delete(chunkIndex);
+						sandustryMP.wsx.pending.add(chunkIndex);
+						queuedCount++;
+					}
+					if (queuedCount) log("Client save recovery: queued", queuedCount, "potentially changed chunks for", from);
+				} catch (e) { log("Client save recovery error:", e.message); }
+			}
 		} else if (msg.t === "resync") {
 			if (sandustryMP.net.role === "host") { log("resync from", from, "-> full world to queue"); enqueueFullWorld(); sandustryMP._lastSnap = 0; }
 		} else if (msg.t === "world-req") {
@@ -563,6 +585,7 @@
 		sandustryMP._placementSeq = 0;
 		sandustryMP._grabPending = null;
 		sandustryMP._grabRequestSequence = 0;
+		sandustryMP._wasSaving = false;
 		resetDecisionClockSession();
 	}
 
@@ -789,6 +812,7 @@
 		if (!mgr) { log("ERROR: no manager worker for pause"); return; }
 		mgr.postMessage([54, paused]); // SetPaused - manager only; session.paused becomes false => render works
 		sandustryMP.wsx.paused = paused;
+		if (!paused) sandustryMP._wasSaving = false;
 		log("Client simulation:", paused ? "PAUSED (host mirror)" : "resumed");
 	}
 
@@ -3645,6 +3669,36 @@
 			}
 		}
 		if (isClientSync()) {
+			// Sandustry pauses the simulation worker while saving and resumes it as
+			// soon as the save completes. A mirrored client must remain paused, so
+			// hold the worker throughout the save and reassert the pause immediately
+			// on the first frame after it finishes.
+			try {
+				const saving = !!(state.session && state.session.saving);
+				if (saving) {
+					sandustryMP._wasSaving = true;
+					const manager = managerWorker(state);
+					if (manager) try { manager.postMessage([54, true]); } catch (e) {}
+				} else if (sandustryMP._wasSaving) {
+					sandustryMP._wasSaving = false;
+					const manager = managerWorker(state);
+					if (manager) try { manager.postMessage([54, true]); } catch (e) {}
+					const dirtyFlags = state.shared.sim && state.shared.sim.chunkShouldUpdate;
+					if (dirtyFlags && dirtyFlags.length) {
+						const dirtyMask = new Uint8Array((dirtyFlags.length + 7) >> 3);
+						let dirtyCount = 0;
+						for (let chunkIndex = 0; chunkIndex < dirtyFlags.length; chunkIndex++) {
+							if (!dirtyFlags[chunkIndex]) continue;
+							dirtyMask[chunkIndex >> 3] |= 1 << (chunkIndex & 7);
+							dirtyCount++;
+						}
+						if (dirtyCount) {
+							net.send({ t: "redirty", m: encodeBase64(dirtyMask), n: dirtyFlags.length });
+							log("Client save recovery: requested refresh for", dirtyCount, "potentially changed chunks");
+						}
+					}
+				}
+			} catch (e) { log("Client save pause recovery error:", e.message); }
 			// Heartbeat re-pause (fix G1): ESC-game menu sends its own SetPaused(false) when closed and silently
 			// resumed client simulation (our flag still true → setClientPaused did not re-pause) →
 			// Double simulation fights the mirror and causes severe desync. Re-send `[54,true]` every two seconds; it is idempotent.

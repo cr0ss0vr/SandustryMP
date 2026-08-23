@@ -2,6 +2,11 @@
 
 All notable changes to SandustryMP are recorded here. Dates use the ISO `YYYY-MM-DD` format.
 
+## v0.2.0 - 2026-08-23
+
+- Kept mirrored clients paused throughout automatic saves and immediately reasserted the worker pause when saving finished.
+- Added targeted post-save recovery that invalidates host row hashes and retransmits any chunks the client simulation may have touched.
+
 ## v0.1.9 - 2026-08-23
 
 - Repaired grabber tank headers from the active spatial slots and cleared stale inactive storage.

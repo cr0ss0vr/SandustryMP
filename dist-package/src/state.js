@@ -61,8 +61,9 @@
 		_moveStash: [],           // structures:removed(byMove) waiting for a pair with :moved
 		_pickedPending: new Map(),// item id -> timestamp (raised locally, waiting for host confirmation)
 		_structApplied: new Map(),// structKey -> timestamp (delete protection period in reconcile)
-		_grabbedCells: new Map(), // idx(x+y*W) -> ts: cells grabbed locally; retake lock before host confirms deletion (mirror)
-		_placedCells: new Map(),  // idx -> timestamp for locally placed grabber cells; a sentinel blocks repeated targeting until host confirmation.
+				_grabbedCells: new Map(), // idx(x+y*W) -> ts: cells grabbed locally; retake lock before host confirms deletion (mirror)
+				_placedCells: new Map(),  // idx -> timestamp for locally placed grabber cells; a sentinel blocks repeated targeting until host confirmation.
+				_wasSaving: false,        // client: native save held the worker pause and still needs immediate post-save recovery
 		_sndWarned: false,
 			};
 		},
