@@ -165,10 +165,26 @@
 			source.style.transform = (source.dataset.smpOriginalTransform ? source.dataset.smpOriginalTransform + " " : "") + "translateY(" + amount + "px)";
 		}
 	}
+	function scheduleObservedMenuRefresh() {
+		if (sandustryMP._menuResizeFrame) return;
+		sandustryMP._menuResizeFrame = requestAnimationFrame(() => {
+			sandustryMP._menuResizeFrame = 0;
+			const latestState = sandustryMP._menuUiState;
+			if (latestState) ensureMenuUi(latestState, true);
+		});
+	}
+	function ensureMenuResizeObserver() {
+		if (sandustryMP._menuResizeObserver || typeof ResizeObserver !== "function" || !document.documentElement) return;
+		const observer = new ResizeObserver(() => scheduleObservedMenuRefresh());
+		observer.observe(document.documentElement);
+		sandustryMP._menuResizeObserver = observer;
+	}
 
-	function ensureMenuUi(state) {
+	function ensureMenuUi(state, forceRefresh) {
+		sandustryMP._menuUiState = state;
+		ensureMenuResizeObserver();
 		const now = performance.now();
-		if (now - (sandustryMP._menuUiT || 0) < 500) return;
+		if (!forceRefresh && now - (sandustryMP._menuUiT || 0) < 500) return;
 		sandustryMP._menuUiT = now;
 		const inMenu = state.store && state.store.scene && state.store.scene.active === 1;
 		let btn = document.getElementById("smp-mp-btn");

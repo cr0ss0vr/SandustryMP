@@ -2,6 +2,10 @@
 
 All notable changes to SandustryMP are recorded here. Dates use the ISO `YYYY-MM-DD` format.
 
+## v0.2.3 - 2026-08-23
+
+- Added a `ResizeObserver`-driven menu refresh so the Multiplayer button follows resolution changes on the next animation frame instead of waiting for the polling interval.
+
 ## v0.2.2 - 2026-08-23
 
 - Made the Multiplayer main-menu label use the base game's responsive typography so it scales correctly at lower screen resolutions.

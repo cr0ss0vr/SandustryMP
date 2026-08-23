@@ -2,7 +2,7 @@
 
 The prototype is being introduced without removing the authoritative world mirror. This keeps normal multiplayer behavior recoverable while the deterministic requirements are measured.
 
-This branch identifies itself as mod `v0.2.2` and transport protocol 7. It must not be mixed with unpatched simulation workers.
+This branch identifies itself as mod `v0.2.3` and transport protocol 7. It must not be mixed with unpatched simulation workers.
 
 ## Implemented baseline
 
