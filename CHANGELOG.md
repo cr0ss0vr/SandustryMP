@@ -2,6 +2,11 @@
 
 All notable changes to SandustryMP are recorded here. Dates use the ISO `YYYY-MM-DD` format.
 
+## v0.2.6 - 2026-08-24
+
+- Made client drill and mining-laser use host-authoritative: clients send their tool and aim coordinates, while the host validates the request, uses the client's position as the tool origin, performs excavation, and consumes energy.
+- Added sequenced tool-use results and remote drill and mining-laser presentation.
+
 ## v0.2.5 - 2026-08-24
 
 - Added persistent per-player positions and hotbars to the host world save, allowing multiplayer clients to return with their own saved location and toolbar across sessions.

@@ -16,7 +16,7 @@
 			window.electron && window.electron.log && window.electron.log("info", "SandustryMP:game", line);
 		} catch (e) {}
 	};
-	const VER = "v0.2.4";
+	const VER = "v0.2.6";
 	const AUTHOR = "Cr0ss0vr";
 	const CONTRIBUTORS = "";
 	const VACUUM_CAPS = [500, 1000, 1500, 2000, 2500, 3000]; // capacity table from the game code (module 6420)
@@ -130,6 +130,117 @@
 	const validElement = (v) => Number.isInteger(v) && v > 0;
 	let profileSave;
 	let profileRestore;
+
+	// ------------------------------------------------------------------
+	// Persistent multiplayer player identity/state (host-save authoritative)
+	// ------------------------------------------------------------------
+	const SMP_PLAYER_ID_PREFIX = "sandustrymp_player_id:";
+	function getSmpProfileName() {
+		// `--smp-profile=name` is intended for running multiple LAN clients from one machine.
+		// SandustryMP's existing `--smp-userdata=...` launcher isolation also gives each
+		// instance a separate localStorage, so the default profile remains distinct there.
+		try {
+			const argv = (typeof process !== "undefined" && process && Array.isArray(process.argv)) ? process.argv
+				: (window.process && Array.isArray(window.process.argv) ? window.process.argv : []);
+			for (let i = 0; i < argv.length; i++) {
+				const arg = String(argv[i] || "");
+				if (arg.startsWith("--smp-profile=")) return arg.slice(14).trim() || "default";
+				if (arg === "--smp-profile" && argv[i + 1]) return String(argv[i + 1]).trim() || "default";
+			}
+		} catch (e) {}
+		try {
+			const queryProfile = new URLSearchParams(location.search).get("smp-profile");
+			if (queryProfile) return queryProfile.trim() || "default";
+		} catch (e) {}
+		return "default";
+	}
+	function getPersistentPlayerId() {
+		if (sandustryMP._persistentPlayerId) return sandustryMP._persistentPlayerId;
+		const profile = getSmpProfileName().slice(0, 64);
+		const key = SMP_PLAYER_ID_PREFIX + profile;
+		let id = null;
+		try { id = localStorage.getItem(key); } catch (e) {}
+		if (!id || !/^[A-Za-z0-9._:-]{8,128}$/.test(id)) {
+			try { id = crypto.randomUUID(); } catch (e) { id = "p-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 14); }
+			try { localStorage.setItem(key, id); } catch (e) {}
+		}
+		sandustryMP._persistentPlayerId = id;
+		sandustryMP._smpProfileName = profile;
+		return id;
+	}
+	function cloneSerializable(value) {
+		try { return JSON.parse(JSON.stringify(value)); } catch (e) { return null; }
+	}
+	function snapshotLocalHotbar(state) {
+		const hb = state && state.store && state.store.player && state.store.player.hotbar;
+		if (!hb || !Array.isArray(hb.bars)) return null;
+		const bars = cloneSerializable(hb.bars);
+		if (!Array.isArray(bars)) return null;
+		return {
+			bars,
+			hotbarIndex: Number.isInteger(hb.hotbarIndex) ? hb.hotbarIndex : 0,
+			activeSlotIndex: Number.isInteger(hb.activeSlotIndex) ? hb.activeSlotIndex : 0,
+		};
+	}
+	function sanitizePersistentHotbar(value) {
+		if (!value || !Array.isArray(value.bars) || value.bars.length > 32) return null;
+		const bars = cloneSerializable(value.bars);
+		if (!Array.isArray(bars)) return null;
+		let totalSlots = 0;
+		for (const bar of bars) {
+			if (!Array.isArray(bar) || bar.length > 64) return null;
+			totalSlots += bar.length;
+		}
+		if (totalSlots > 512) return null;
+		return {
+			bars,
+			hotbarIndex: Number.isInteger(value.hotbarIndex) ? Math.max(0, Math.min(bars.length - 1, value.hotbarIndex)) : 0,
+			activeSlotIndex: Number.isInteger(value.activeSlotIndex) ? Math.max(0, Math.min(63, value.activeSlotIndex)) : 0,
+		};
+	}
+	function persistentPlayersStore(state, create) {
+		if (!state || !state.store) return null;
+		if (!state.store.mods) { if (!create) return null; state.store.mods = {}; }
+		if (!state.store.mods.sandustryMPPlayers || typeof state.store.mods.sandustryMPPlayers !== "object" || Array.isArray(state.store.mods.sandustryMPPlayers)) {
+			if (!create) return null;
+			state.store.mods.sandustryMPPlayers = {};
+		}
+		return state.store.mods.sandustryMPPlayers;
+	}
+	function validPersistentPosition(value) {
+		return value && Number.isFinite(value.x) && Number.isFinite(value.y) && Math.abs(value.x) <= 10000000 && Math.abs(value.y) <= 10000000;
+	}
+	function applyPersistentPlayerState(state, saved) {
+		if (!state || !state.store || !state.store.player) return false;
+		const player = state.store.player;
+		if (saved && validPersistentPosition(saved.position)) { player.x = saved.position.x; player.y = saved.position.y; }
+		const hotbar = saved && sanitizePersistentHotbar(saved.hotbar);
+		if (hotbar && player.hotbar) {
+			player.hotbar.bars = hotbar.bars;
+			player.hotbar.hotbarIndex = hotbar.hotbarIndex;
+			player.hotbar.activeSlotIndex = hotbar.activeSlotIndex;
+			try { sandustryMP.gameApi.ui && sandustryMP.gameApi.ui.overlays && sandustryMP.gameApi.ui.overlays.update && sandustryMP.gameApi.ui.overlays.update(state, "hotbar"); } catch (e) {}
+		}
+		return true;
+	}
+	function sendPersistentIdentityIfDue(state, now) {
+		if (sandustryMP.net.role !== "client" || !sandustryMP._baseWorldReady || !sandustryMP.peers.size || sandustryMP._persistentStateReady) return;
+		if (now - (sandustryMP._persistentIdentityT || 0) < 1000) return;
+		sandustryMP._persistentIdentityT = now;
+		try { net.send({ t: "pident", id: getPersistentPlayerId(), profile: sandustryMP._smpProfileName || getSmpProfileName() }); } catch (e) {}
+	}
+	function sendPersistentPlayerStateIfDue(state, now, force) {
+		if (sandustryMP.net.role !== "client" || !sandustryMP._persistentStateReady || !state || !state.store || !state.store.player) return;
+		if (!force && now - (sandustryMP._persistentStateSendT || 0) < 1000) return;
+		sandustryMP._persistentStateSendT = now;
+		const pl = state.store.player;
+		const payload = { position: { x: Math.round(pl.x * 10) / 10, y: Math.round(pl.y * 10) / 10 }, hotbar: snapshotLocalHotbar(state) };
+		let serialized = null; try { serialized = JSON.stringify(payload); } catch (e) {}
+		if (!force && serialized && serialized === sandustryMP._persistentStateLast && now - (sandustryMP._persistentStateFullT || 0) < 10000) return;
+		sandustryMP._persistentStateLast = serialized;
+		sandustryMP._persistentStateFullT = now;
+		try { net.send({ t: "pstateUpdate", id: getPersistentPlayerId(), state: payload }); } catch (e) {}
+	}
 
 	// Grabber (client): reset the cellId locally and remember it so that the grabber doesn't take it again
 	// before the host confirms the deletion via the mirror. Called only on the client side (mirror renderer).
@@ -270,7 +381,51 @@
 			if (p && typeof msg.ts === "number") { const rtt = performance.now() - msg.ts; p.ping = p.ping != null ? Math.round(p.ping * 0.7 + rtt * 0.3) : Math.round(rtt); }
 			return;
 		}
-		if (msg.t === "pos") {
+		if (msg.t === "pident") {
+			if (sandustryMP.net.role !== "host" || !sandustryMP.state || typeof msg.id !== "string" || !/^[A-Za-z0-9._:-]{8,128}$/.test(msg.id)) return;
+			const peer = sandustryMP.peers.get(from) || { x: 0, y: 0, tx: 0, ty: 0, lastSeen: performance.now() };
+			peer.playerId = msg.id;
+			peer.playerProfile = typeof msg.profile === "string" ? msg.profile.slice(0, 64) : "default";
+			peer.playerStateReady = false;
+			sandustryMP.peers.set(from, peer);
+			const records = persistentPlayersStore(sandustryMP.state, false);
+			const saved = records && records[msg.id] ? cloneSerializable(records[msg.id]) : null;
+			try { net.send({ t: "pstate", id: msg.id, state: saved }, from); } catch (e) {}
+			log("HOST persistent player identity:", peer.nick || from, msg.id, saved ? "restore found" : "new player");
+			return;
+		} else if (msg.t === "pstate") {
+			if (sandustryMP.net.role !== "client" || !sandustryMP._baseWorldReady || msg.id !== getPersistentPlayerId() || !sandustryMP.state) return;
+			const restored = msg.state && typeof msg.state === "object" ? msg.state : sandustryMP._hostPlayerBaseline;
+			applyPersistentPlayerState(sandustryMP.state, restored);
+			// Reconcile after restoring the client's own layout so a saved hotbar cannot
+			// bypass technology/building unlocks in the authoritative host world.
+			try { reconcileClientBuildingHotbar(sandustryMP.state, sandustryMP.state.store.player && sandustryMP.state.store.player.buildings); } catch (e) {}
+			sandustryMP._persistentStateReady = true;
+			sandustryMP._persistentStateLast = null;
+			try { net.send({ t: "pstateAck", id: msg.id }); } catch (e) {}
+			sendPersistentPlayerStateIfDue(sandustryMP.state, performance.now(), true);
+			log("CLIENT persistent player state", msg.state ? "restored from host save" : "initialized from host world", "id", msg.id);
+			return;
+		} else if (msg.t === "pstateAck") {
+			if (sandustryMP.net.role !== "host" || typeof msg.id !== "string") return;
+			const peer = sandustryMP.peers.get(from);
+			if (peer && peer.playerId === msg.id) peer.playerStateReady = true;
+			return;
+		} else if (msg.t === "pstateUpdate") {
+			if (sandustryMP.net.role !== "host" || !sandustryMP.state || typeof msg.id !== "string") return;
+			const peer = sandustryMP.peers.get(from);
+			if (!peer || peer.playerId !== msg.id || !msg.state || typeof msg.state !== "object") return;
+			const records = persistentPlayersStore(sandustryMP.state, true);
+			const existing = records[msg.id] && typeof records[msg.id] === "object" ? records[msg.id] : {};
+			const next = { nickname: (peer.nick || "?").slice(0, 64) };
+			if (validPersistentPosition(msg.state.position)) next.position = { x: msg.state.position.x, y: msg.state.position.y };
+			else if (validPersistentPosition(existing.position)) next.position = existing.position;
+			const hotbar = sanitizePersistentHotbar(msg.state.hotbar);
+			if (hotbar) next.hotbar = hotbar; else if (existing.hotbar) next.hotbar = existing.hotbar;
+			records[msg.id] = next;
+			peer.lastPersistentState = performance.now();
+			return;
+		} else if (msg.t === "pos") {
 			let p = sandustryMP.peers.get(from);
 			const now0 = performance.now();
 			if (!p) { p = { nick: "?", x: msg.x, y: msg.y, tx: msg.x, ty: msg.y, vx: 0, vy: 0, tUpdate: now0, lastSeen: 0 }; sandustryMP.peers.set(from, p); }
@@ -361,6 +516,15 @@
 			if (sandustryMP.net.role === "client" && sandustryMP._baseWorldReady) applyNetStructs(msg);
 		} else if (msg.t === "placeResult") {
 			if (sandustryMP.net.role === "client") applyPlacementResult(msg);
+		} else if (msg.t === "toolDigResult") {
+			if (sandustryMP.net.role === "client" && validEnergyTool(msg.tool) && Number.isInteger(msg.q)) {
+				const toolState = clientEnergyToolState(msg.tool);
+				if (msg.q >= (toolState.lastResultSequence || 0)) {
+					toolState.lastResultSequence = msg.q;
+					toolState.lastSuccess = msg.success === true;
+					toolState.lastReason = typeof msg.reason === "string" ? msg.reason : null;
+				}
+			}
 		} else if (msg.t === "snap") {
 			if (sandustryMP.net.role === "client" && sandustryMP._baseWorldReady) applySnapshot(msg).catch((e) => log("snap error:", e.message));
 		} else if (msg.t === "res") {
@@ -940,7 +1104,11 @@
 		}
 		if (appliedChunkCount > 0 && !worldSync.everApplied) {
 			worldSync.everApplied = true; log("First world packages applied - mirror works"); setStatus(t("players", sandustryMP.peers.size + 1));
-			profileRestore(state, msg.wid || sandustryMP._trustedWid); // go back where you left off in TYM world (G7-lite)
+			// Preserve the just-loaded host-save player state as the first-join fallback.
+			// The legacy local profile may still restore equipment, but position/hotbar are
+			// subsequently replaced by the host-authoritative multiplayer player record.
+			sandustryMP._hostPlayerBaseline = { position: { x: state.store.player.x, y: state.store.player.y }, hotbar: snapshotLocalHotbar(state) };
+			profileRestore(state, msg.wid || sandustryMP._trustedWid); // legacy equipment/local profile restore
 			// AUTO-RESYNC (fix TCentraL "big map"): initial flood (enqueueFullWorld via peer-hello) was running
 			// when the client was still in MENU/load and was DROPOWANY and the host's rowH considers it delivered
 			// → without it there are constantly holes in the world until the manual Resync. Raz per session (_autoResynced flag).
@@ -2400,6 +2568,58 @@
 	// ------------------------------------------------------------------
 	// AKCJE — hooki z patchy bundle.js
 	// ------------------------------------------------------------------
+	function energyToolAim(state) {
+		try {
+			const mouse = state.session && state.session.input && state.session.input.mouse;
+			const worldPosition = mouse && mouse.worldPosition;
+			if (!worldPosition || !Number.isFinite(worldPosition.x) || !Number.isFinite(worldPosition.y)) return null;
+			return { x: worldPosition.x, y: worldPosition.y };
+		} catch (e) { return null; }
+	}
+	function clientEnergyToolState(toolId) {
+		const states = sandustryMP._energyToolStates || (sandustryMP._energyToolStates = new Map());
+		let toolState = states.get(toolId);
+		if (!toolState) { toolState = { active: false, lastAimAt: 0, lastUseAt: 0, sequence: 0 }; states.set(toolId, toolState); }
+		return toolState;
+	}
+	sandustryMP._energyToolAim = (state, toolId) => {
+		if (!isClientSync() || !sandustryMP.wsx.paused || (toolId !== "drill" && toolId !== "laser")) return false;
+		const aim = energyToolAim(state);
+		if (!aim) return true;
+		const now = performance.now();
+		const toolState = clientEnergyToolState(toolId);
+		const starting = !toolState.active;
+		toolState.active = true;
+		if (starting || now - toolState.lastAimAt >= 100) {
+			toolState.lastAimAt = now;
+			try { net.send({ t: "act", k: "toolAim", tool: toolId, ax: aim.x, ay: aim.y, start: starting }); } catch (e) {}
+		}
+		return true;
+	};
+	sandustryMP._energyToolUse = (state, toolId) => {
+		if (!isClientSync() || !sandustryMP.wsx.paused || (toolId !== "drill" && toolId !== "laser")) return false;
+		const aim = energyToolAim(state);
+		if (!aim) return true;
+		sandustryMP._energyToolAim(state, toolId);
+		const now = performance.now();
+		const toolState = clientEnergyToolState(toolId);
+		// Tool handlers run at render frequency. Thirty intent pulses per second
+		// preserve sustained use without flooding the reliable action channel.
+		if (now - toolState.lastUseAt < 33) return true;
+		toolState.lastUseAt = now;
+		toolState.sequence++;
+		try { net.send({ t: "act", k: "toolDig", tool: toolId, ax: aim.x, ay: aim.y, q: toolState.sequence }); } catch (e) {}
+		return true; // host owns energy consumption and excavation
+	};
+	sandustryMP._energyToolStop = (toolId) => {
+		if (!isClientSync() || !sandustryMP.wsx.paused) return false;
+		const toolState = clientEnergyToolState(toolId);
+		if (!toolState.active) return true;
+		toolState.active = false;
+		toolState.lastAimAt = 0;
+		try { net.send({ t: "act", k: "toolStop", tool: toolId, q: toolState.sequence }); } catch (e) {}
+		return true;
+	};
 	// `_dig`: forward only player excavation (`_pd` from patch I) and impacts.
 	// Forward only the client's own projectiles (`_projCtx` flag); remote projectiles never enter the store.
 	// Do not forward excavation caused by creatures or drones; the host simulates those itself.
@@ -2529,7 +2749,7 @@
 		} catch (e) { return false; }
 	};
 
-	const HOST_ACTION_KINDS = new Set(["dig", "place", "demolish", "upg", "tech", "tier", "story", "collect", "sig", "sbtn", "paste", "sdata", "aug", "pipeRm", "vac", "grabH", "drone", "proj", "move", "pickup", "grabPick", "grabPlace", "fireB", "shakeB", "volcB", "caulkB", "caulkRmB", "cryoB"]);
+	const HOST_ACTION_KINDS = new Set(["dig", "toolAim", "toolDig", "toolStop", "place", "demolish", "upg", "tech", "tier", "story", "collect", "sig", "sbtn", "paste", "sdata", "aug", "pipeRm", "vac", "grabH", "drone", "proj", "move", "pickup", "grabPick", "grabPlace", "fireB", "shakeB", "volcB", "caulkB", "caulkRmB", "cryoB"]);
 	function finiteCoordinate(value) { return Number.isFinite(value) && Math.abs(value) <= 1000000; }
 	function validCoordinatePair(x, y) { return finiteCoordinate(x) && finiteCoordinate(y); }
 	function validCellBatch(cells, maxCells) {
@@ -2537,6 +2757,7 @@
 		for (let index = 0; index < cells.length; index += 2) if (!validCoordinatePair(cells[index], cells[index + 1])) return false;
 		return true;
 	}
+	function validEnergyTool(toolId) { return toolId === "drill" || toolId === "laser"; }
 	function validateHostAction(msg, fromId) {
 		if (!msg || typeof msg !== "object" || typeof msg.k !== "string" || !HOST_ACTION_KINDS.has(msg.k)) return false;
 		// Only a currently connected peer can submit gameplay intent. The packet is
@@ -2545,6 +2766,9 @@
 		if (!fromId || !sandustryMP.peers || !sandustryMP.peers.has(fromId)) return false;
 		if (["place", "sbtn", "sdata", "grabPick", "grabPlace"].includes(msg.k) && !validCoordinatePair(msg.x, msg.y)) return false;
 		if (["vac", "grabH"].includes(msg.k) && !validCoordinatePair(msg.x, msg.y)) return false;
+		if (["toolAim", "toolDig"].includes(msg.k) && (!validEnergyTool(msg.tool) || !validCoordinatePair(msg.ax, msg.ay))) return false;
+		if (msg.k === "toolDig" && (!Number.isInteger(msg.q) || msg.q <= 0)) return false;
+		if (msg.k === "toolStop" && !validEnergyTool(msg.tool)) return false;
 		if (["pipeRm", "demolish"].includes(msg.k)) {
 			const rect = msg.k === "demolish" ? msg.rect : msg;
 			if (!rect || ![rect.x0, rect.y0, rect.x1, rect.y1].every(finiteCoordinate) || rect.x1 < rect.x0 || rect.y1 < rect.y0 || (rect.x1 - rect.x0 + 1) * (rect.y1 - rect.y0 + 1) > 40000) return false;
@@ -2556,6 +2780,105 @@
 		}
 		return true;
 	}
+	function hostPeerToolState(peer, toolId) {
+		const states = peer.energyTools || (peer.energyTools = new Map());
+		let toolState = states.get(toolId);
+		if (!toolState) { toolState = { active: false, startedAt: 0, lastAimAt: 0, lastUseAt: 0, lastSequence: 0, aimX: 0, aimY: 0 }; states.set(toolId, toolState); }
+		return toolState;
+	}
+	function hostOwnsEnergyTool(state, toolId) {
+		const inventory = state.store.player && state.store.player.inventory;
+		return Array.isArray(inventory) && inventory.some((item) => item && String(item.id != null ? item.id : item.typeId) === toolId);
+	}
+	function hostCanUseEnergyTool(state, peer) {
+		const authorization = sandustryMP.gameApi && sandustryMP.gameApi.authorization;
+		if (!authorization || typeof authorization.canUseTool !== "function") return true;
+		try {
+			const remotePlayer = Object.assign({}, state.store.player, { x: peer.tx, y: peer.ty });
+			return authorization.canUseTool(state, remotePlayer) !== false;
+		} catch (e) { return false; }
+	}
+	function hostEnergyToolOrigin(state, peer, toolId) {
+		const player = state.store.player || {};
+		return {
+			x: peer.tx + (Number(player.width) || 0) / 2,
+			y: peer.ty + (Number(player.height) || 0) / 2 + (toolId === "laser" ? 2 : 0),
+		};
+	}
+	function hostConsumeEnergy(state, amount, allOrNothing) {
+		const energy = sandustryMP.gameApi && sandustryMP.gameApi.energy;
+		if (!energy || typeof energy.consume !== "function") return false;
+		try {
+			const resources = state.store.resources || {};
+			const before = Number(resources.energy) || 0;
+			if (before < amount && allOrNothing) return false;
+			if (before <= 0) return false;
+			const consumed = energy.consume(state, amount, allOrNothing ? { allOrNothing: true } : undefined);
+			const after = Number(resources.energy) || 0;
+			return consumed === amount || consumed > 0 || after < before;
+		} catch (e) { return false; }
+	}
+	function hostDrillTarget(state, origin, angle, maxRange) {
+		const { cellIds, width, height } = worldBuffers(state);
+		if (!cellIds || !width || !height) return null;
+		const cells = new Uint32Array(cellIds.buffer, cellIds.byteOffset, width * height);
+		const halfCell = 2;
+		for (let distance = 0; distance < maxRange; distance += halfCell) {
+			const x = Math.floor((origin.x + Math.cos(angle) * distance) / 4);
+			const y = Math.floor((origin.y + Math.sin(angle) * distance) / 4);
+			if (x < 0 || y < 0 || x >= width || y >= height) continue;
+			const cellId = cells[y * width + x];
+			if (cellId > 0 && cellId <= 1000) return { x, y };
+		}
+		return null;
+	}
+	function sendEnergyToolResult(fromId, msg, success, reason, extra) {
+		try { net.send(Object.assign({ t: "toolDigResult", tool: msg.tool, q: msg.q || 0, success: !!success, reason: reason || null }, extra || {}), fromId); } catch (e) {}
+	}
+	function executeHostEnergyTool(state, peer, msg) {
+		const now = performance.now();
+		const toolState = hostPeerToolState(peer, msg.tool);
+		if (msg.q <= toolState.lastSequence) return { success: false, reason: "stale" };
+		toolState.lastSequence = msg.q;
+		if (now - toolState.lastUseAt < 20) return { success: false, reason: "rate" };
+		toolState.lastUseAt = now;
+		if (!hostOwnsEnergyTool(state, msg.tool)) return { success: false, reason: "locked" };
+		if (!hostCanUseEnergyTool(state, peer)) return { success: false, reason: "unauthorized" };
+		if (!Number.isFinite(peer.tx) || !Number.isFinite(peer.ty) || now - (peer.lastSeen || 0) > 1500) return { success: false, reason: "position" };
+		const origin = hostEnergyToolOrigin(state, peer, msg.tool);
+		const angle = Math.atan2(msg.ay - origin.y, msg.ax - origin.x);
+		if (!Number.isFinite(angle)) return { success: false, reason: "aim" };
+		if (msg.tool === "laser") {
+			if (!toolState.active || now - toolState.startedAt < 950 || now - toolState.lastAimAt > 250) return { success: false, reason: "charge" };
+			const raycast = sandustryMP.gameApi && sandustryMP.gameApi.raycast;
+			const patterns = sandustryMP.gameApi && sandustryMP.gameApi.patterns;
+			if (!raycast || typeof raycast.cast !== "function" || !patterns || typeof patterns.createCircle !== "function" || typeof patterns.excavate !== "function") return { success: false, reason: "api" };
+			const target = raycast.cast(state, origin.x, origin.y, angle, 1000);
+			if (!target || !Number.isFinite(target.x) || !Number.isFinite(target.y)) return { success: false, reason: "target" };
+			if (!hostConsumeEnergy(state, 60, true)) return { success: false, reason: "energy" };
+			const velocity = { x: 300 * Math.cos(angle), y: 300 * -Math.sin(angle) };
+			patterns.excavate(state, target.x, target.y, patterns.createCircle(7), velocity, 1, { fromDrill: true });
+			return { success: true, target, energy: 60 };
+		}
+		const world = sandustryMP.gameApi && sandustryMP.gameApi.world;
+		if (!world || typeof world.excavate !== "function") return { success: false, reason: "api" };
+		let boreLevel = 0;
+		try {
+			const upgrades = sandustryMP.gameApi.upgrades;
+			if (upgrades && typeof upgrades.getLevel === "function") boreLevel = upgrades.getLevel(state, "drill", "bore") || 0;
+		} catch (e) {}
+		let excavations = 0;
+		for (let rayIndex = 0; rayIndex < 20; rayIndex++) {
+			if (Math.random() > 0.1) continue;
+			const rayAngle = angle - Math.PI / 36 * 19 / 2 + rayIndex * Math.PI / 36;
+			const target = hostDrillTarget(state, origin, rayAngle, 7 * 4);
+			if (!target || !hostConsumeEnergy(state, 1, false)) continue;
+			const velocity = { x: 100 * Math.cos(rayAngle + Math.PI), y: 100 * Math.sin(rayAngle + Math.PI) };
+			world.excavate(state, target.x, target.y, velocity, 1 + boreLevel, { fromDrill: true, useLiteralOutVelocity: true });
+			excavations++;
+		}
+		return excavations ? { success: true, excavations, energy: excavations } : { success: false, reason: (state.store.resources.energy || 0) > 0 ? "target" : "energy" };
+	}
 
 	function replayAction(msg, fromId) {
 		const state = sandustryMP.state;
@@ -2565,7 +2888,24 @@
 			return;
 		}
 		try {
-			if (msg.k === "dig") {
+			if (msg.k === "toolAim") {
+				const peer = sandustryMP.peers.get(fromId);
+				const toolState = hostPeerToolState(peer, msg.tool);
+				const now = performance.now();
+				if (!toolState.active || msg.start === true || now - toolState.lastAimAt > 250) toolState.startedAt = now;
+				toolState.active = true; toolState.lastAimAt = now; toolState.aimX = msg.ax; toolState.aimY = msg.ay;
+			} else if (msg.k === "toolStop") {
+				const peer = sandustryMP.peers.get(fromId);
+				const toolState = hostPeerToolState(peer, msg.tool);
+				toolState.active = false; toolState.startedAt = 0; toolState.lastAimAt = 0;
+			} else if (msg.k === "toolDig") {
+				const peer = sandustryMP.peers.get(fromId);
+				const toolState = hostPeerToolState(peer, msg.tool);
+				toolState.aimX = msg.ax; toolState.aimY = msg.ay; toolState.lastAimAt = performance.now();
+				if (msg.tool === "drill" && !toolState.active) { toolState.active = true; toolState.startedAt = toolState.lastAimAt; }
+				const result = executeHostEnergyTool(state, peer, msg);
+				sendEnergyToolResult(fromId, msg, result.success, result.reason, result.success ? { x: result.target && result.target.x, y: result.target && result.target.y, energy: result.energy, excavations: result.excavations } : null);
+			} else if (msg.k === "dig") {
 				const ex = findApi("excavate", ["excavation", "patterns"]); // ns name differs between builds (current=excavation, 0.5.3=patterns)
 				if (ex) { ex(state, msg.x, msg.y, msg.m, msg.v, msg.d); if (!sandustryMP._digLogged) { sandustryMP._digLogged = true; log("HOST: first client mining recreated @", msg.x, msg.y); } }
 				else if (!sandustryMP._digErrLogged) { sandustryMP._digErrLogged = true; log("ERROR: missing API excavate - FH keys:", Object.keys(sandustryMP.gameApi || {}).join(",")); }
@@ -3351,7 +3691,7 @@
 	// --- Modele players: real sprites cloned from the game engine (dotNine contribution) ---
 	const NAMETAG_OFFSET_PX = 46;
 	const PUPPET_ANCHOR_DX = 6, PUPPET_ANCHOR_DY = 13; // anchor correction relative to store.player.x/y (for tuning)
-	const PUPPET_PART_ORDER = ["body", "weapon", "builder", "buildTool", "cryoblaster", "vacuum", "forearm", "shovel", "flamethrower", "rocketLauncher", "offhandShovel"];
+	const PUPPET_PART_ORDER = ["body", "weapon", "builder", "buildTool", "cryoblaster", "vacuum", "drill", "laser", "forearm", "shovel", "flamethrower", "rocketLauncher", "offhandShovel"];
 	const PUPPET_ALWAYS_PARTS = new Set(["body", "forearm"]);
 	const PUPPET_TOOL_PARTS = PUPPET_PART_ORDER.filter((n) => !PUPPET_ALWAYS_PARTS.has(n));
 	const MUZZLE_FLASH_MS = 90;
@@ -3540,7 +3880,7 @@
 			drawProj(sandustryMP.remoteProjectiles);
 			for (const p of sandustryMP.peers.values()) drawProj(p.projectiles);
 		}
-		// Real-time action preview: placement ghost plus grabber or vacuum reticle.
+		// Real-time action preview: placement ghost, energy-tool aim, and collection reticles.
 		// Pokazuje GDZIE another player is about to build a building / where he collects resources - so don't do it this time
 		// same place. Rysowane in player color. Kursor in the world (mwx/mwy) + build intention (bt/boffs).
 		if (ctx && gc) {
@@ -3551,7 +3891,14 @@
 				if (cur.x < -80 || cur.y < -80 || cur.x > gc.width + 80 || cur.y > gc.height + 80) continue;
 				const s1 = worldToScreen(state, p.mwx + 4, p.mwy); // +1 cell (=4 world) → pixels/cell (zoom scale)
 				let ppc = Math.abs(s1.x - cur.x); if (!(ppc > 0.5)) ppc = 6;
-				if (p.bt != null && Array.isArray(p.boffs) && p.boffs.length) {
+				if ((p.tools || []).indexOf("laser") >= 0) {
+					const origin = worldToScreen(state, p.x + PUPPET_ANCHOR_DX, p.y + PUPPET_ANCHOR_DY);
+					ctx.save();
+					ctx.strokeStyle = "#ff3b30"; ctx.fillStyle = "#ff766e"; ctx.lineWidth = Math.max(1.5, ppc * 0.22);
+					ctx.globalAlpha = 0.85; ctx.beginPath(); ctx.moveTo(origin.x, origin.y); ctx.lineTo(cur.x, cur.y); ctx.stroke();
+					ctx.globalAlpha = 0.95; ctx.beginPath(); ctx.arc(cur.x, cur.y, Math.max(2, ppc * 0.4), 0, Math.PI * 2); ctx.fill();
+					ctx.restore();
+				} else if (p.bt != null && Array.isArray(p.boffs) && p.boffs.length) {
 					// FANTOM POZY - rectangles where the player is about to place (first offset = under the cursor)
 					const base = p.boffs[0];
 					ctx.save();
@@ -3594,7 +3941,7 @@
 		}
 		if (gameApi && !sandustryMP.gameApi) sandustryMP.gameApi = gameApi;
 		// scene/world change detection (state reload)
-		if (sandustryMP.state !== state) { sandustryMP.state = state; sandustryMP.wsx.paused = false; log("New state object detected, possibly due to a scene change"); }
+		if (sandustryMP.state !== state) { sandustryMP.state = state; sandustryMP.wsx.paused = false; sandustryMP._energyToolStates = new Map(); log("New state object detected, possibly due to a scene change"); }
 		ensureDecisionClock(state);
 		// Garde anti-flood poses: when entering the world (change scene.active) the game reconstructs structures
 		// when running building:place → do not forward them for 3s (see sandustryMP._place).
@@ -3636,6 +3983,9 @@
 				sandustryMP._finishingTransferLoad = true;
 				localStorage.removeItem("smp_pending_transfer_load");
 				sandustryMP._baseWorldReady = true;
+				sandustryMP._persistentStateReady = false;
+				sandustryMP._persistentIdentityT = 0;
+				sandustryMP._persistentStateLast = null;
 				sandustryMP._worldRxDone = true;
 				sandustryMP._gotHostWorld = true;
 				sandustryMP._pendingTrustUntil = now + 15000;
@@ -3649,6 +3999,10 @@
 			sandustryMP._pendingPostLoadResync = false;
 			sandustryMP._autoResynced = true;
 			try { net.send({ t: "resync" }); log("AUTO-RESYNC after imported host save finished loading"); } catch (e) { sandustryMP._pendingPostLoadResync = true; }
+		}
+		if (sandustryMP.net.role === "client" && sandustryMP._baseWorldReady) {
+			sendPersistentIdentityIfDue(state, now);
+			sendPersistentPlayerStateIfDue(state, now, false);
 		}
 		updateClientConveyorAnimations(state);
 		if (net && sandustryMP.net.role !== "idle" && state.store && state.store.player && now - sandustryMP._lastPosSend > 33) {
@@ -3884,7 +4238,8 @@
 			// During this window it previously caused `net.stop()` → reconnect → transfer → load loops (ZeroHazard report).
 			if (sandustryMP.wsx.everApplied && sandustryMP.wsx.wasInWorld && !sandustryMP._loadingWorld && state.store.scene && state.store.scene.active === 1) {
 				log("Client returned to the title menu; leaving the co-op session");
-				profileSave(state); // Save per-world position and equipment while paused, as required by `profileSave`.
+				profileSave(state); // Save legacy per-world equipment profile.
+				sendPersistentPlayerStateIfDue(state, performance.now(), true); // host-save position + hotbar checkpoint
 				setClientPaused(false);
 				try { net.stop(); } catch (e) {}
 				setStatus(t("left_to_menu"), "#fd5");

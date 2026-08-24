@@ -137,6 +137,36 @@
    ]
   },
   {
+   "name": "drill client intent hook (_energyToolUse)",
+   "critical": false,
+   "variants": [
+    {
+          "anchor": ",!e.session.action.state[a.qy.Active])return;if((e.store.resources.energy||0)<=0)return",
+          "patched": ",!e.session.action.state[a.qy.Active])return void(window.SandustryMP&&window.SandustryMP._energyToolStop&&window.SandustryMP._energyToolStop(\"drill\"));if(window.SandustryMP&&window.SandustryMP._energyToolUse&&window.SandustryMP._energyToolUse(e,\"drill\"))return;if((e.store.resources.energy||0)<=0)return"
+    }
+   ]
+  },
+  {
+   "name": "laser client aim hook (_energyToolAim)",
+   "critical": false,
+   "variants": [
+    {
+     "anchor": "if(ai&&(ai.destroy(),ai=null),!e.session.action.state[D.qy.Active])return void(ri=!1);if(!ie.FH.authorization.canUseTool",
+     "patched": "if(ai&&(ai.destroy(),ai=null),!e.session.action.state[D.qy.Active]){window.SandustryMP&&window.SandustryMP._energyToolStop&&window.SandustryMP._energyToolStop(\"laser\");return void(ri=!1)}window.SandustryMP&&window.SandustryMP._energyToolAim&&window.SandustryMP._energyToolAim(e,\"laser\");if(!ie.FH.authorization.canUseTool"
+    }
+   ]
+  },
+  {
+   "name": "laser client use hook (_energyToolUse)",
+   "critical": false,
+   "variants": [
+    {
+     "anchor": "if(!(e=>60===ie.FH.energy.consume(e,60,{allOrNothing:!0}))(e))return",
+     "patched": "if(window.SandustryMP&&window.SandustryMP._energyToolUse&&window.SandustryMP._energyToolUse(e,\"laser\"))return;if(!(e=>60===ie.FH.energy.consume(e,60,{allOrNothing:!0}))(e))return"
+    }
+   ]
+  },
+  {
    "name": "player-dig flag (I)",
    "variants": [
     {
