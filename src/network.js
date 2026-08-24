@@ -52,7 +52,7 @@
 						sandustryMP._baseWorldReady = false; // no mirror/state mutation is valid until the host transfer has loaded
 						sandustryMP._trustedWid = null; sandustryMP._pendingTrustUntil = 0;
 						sandustryMP._gotHostWorld = false; // Critical: never carry world trust between sessions; a different host may have a different world.
-						sandustryMP._fireQ = []; sandustryMP._cryoQ = []; sandustryMP._grabbedCells.clear(); sandustryMP._placedCells.clear(); sandustryMP._volcQ = []; sandustryMP._caulkQ = []; sandustryMP._caulkRmQ = []; sandustryMP._shakeQ = []; sandustryMP._energyToolStates = new Map(); // previous session state belongs to different coordinates/world
+						sandustryMP._fireQ = []; sandustryMP._cryoQ = []; sandustryMP._grabbedCells.clear(); sandustryMP._placedCells.clear(); sandustryMP._volcQ = []; sandustryMP._caulkQ = []; sandustryMP._caulkRmQ = []; sandustryMP._shakeQ = []; sandustryMP._energyToolStates = new Map(); sandustryMP._cryoIntentState = null; // previous session state belongs to different coordinates/world
 						// own nickname (localStorage) broadcast via the existing hello protocol - no changes in the IPC bridge
 						if (sandustryMP._nickCustom) { try { net.send({ t: "hello", nick: sandustryMP._nickCustom }); } catch (e) {} }
 						setStatus(t("joined", ev.transport));
@@ -91,7 +91,7 @@
 					} else if (ev.kind === "stopped") {
 						if (sandustryMP.state) profileSave(sandustryMP.state); // before role reset (isClientSync still true)
 						sandustryMP.net.role = "idle"; sandustryMP.peers.clear(); removeAllPeerPuppets(); setStatus(t("offline"), "#aaa"); showInviteButton(false); sandustryMP.net.lobbyId = null; updateLobbyIdDisplay(); updatePingDisplay();
-						sandustryMP._fireQ = []; sandustryMP._cryoQ = []; sandustryMP._grabbedCells.clear(); sandustryMP._placedCells.clear(); sandustryMP._volcQ = []; sandustryMP._caulkQ = []; sandustryMP._caulkRmQ = []; sandustryMP._shakeQ = []; sandustryMP._energyToolStates = new Map();
+						sandustryMP._fireQ = []; sandustryMP._cryoQ = []; sandustryMP._grabbedCells.clear(); sandustryMP._placedCells.clear(); sandustryMP._volcQ = []; sandustryMP._caulkQ = []; sandustryMP._caulkRmQ = []; sandustryMP._shakeQ = []; sandustryMP._energyToolStates = new Map(); sandustryMP._cryoIntentState = null;
 						sandustryMP._gotHostWorld = false;
 						sandustryMP._lastAppliedSq = null; // drop the ack so it cannot throttle the next session
 						resetWorldQueue();        // queue, row hashes and congestion state are all per session

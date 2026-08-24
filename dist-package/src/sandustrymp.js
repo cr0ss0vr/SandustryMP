@@ -16,7 +16,7 @@
 			window.electron && window.electron.log && window.electron.log("info", "SandustryMP:game", line);
 		} catch (e) {}
 	};
-	const VER = "v0.2.6";
+	const VER = "v0.2.7";
 	const AUTHOR = "Cr0ss0vr";
 	const CONTRIBUTORS = "";
 	const VACUUM_CAPS = [500, 1000, 1500, 2000, 2500, 3000]; // capacity table from the game code (module 6420)
@@ -2450,6 +2450,19 @@
 	// A connected client on another world keeps normal local weapon behavior and forwards nothing.
 	// (its coordinates make no sense in the host world).
 	sandustryMP._fire = (state, x, y) => { if (!isClientSync() || !sandustryMP.wsx.paused) return false; if (sandustryMP._fireQ.length < 2000) sandustryMP._fireQ.push(x, y); return true; };
+	sandustryMP._cryoUse = (state) => {
+		if (!isClientSync() || !sandustryMP.wsx.paused) return false;
+		const aim = mouseWorldAim(state);
+		if (!aim) return true;
+		const now = performance.now();
+		const toolState = sandustryMP._cryoIntentState || (sandustryMP._cryoIntentState = { lastUseAt: 0, sequence: 0 });
+		if (now - toolState.lastUseAt >= 33) {
+			toolState.lastUseAt = now;
+			toolState.sequence++;
+			try { net.send({ t: "act", k: "cryoUse", ax: aim.x, ay: aim.y, q: toolState.sequence }); } catch (e) {}
+		}
+		return true;
+	};
 	sandustryMP._cryo = (state, x, y) => { if (!isClientSync() || !sandustryMP.wsx.paused) return; if (sandustryMP._cryoQ.length < 2000) sandustryMP._cryoQ.push(x, y); };
 	// volcanizer (lawa) + caulkBlaster (spray/usuwanie caulku): ten sam wzorzec co cryo — sekwencja
 	// before Lu (local Lu is dropped at the client anyway), batch every 60ms, host plays with guards.
@@ -2568,7 +2581,7 @@
 	// ------------------------------------------------------------------
 	// AKCJE — hooki z patchy bundle.js
 	// ------------------------------------------------------------------
-	function energyToolAim(state) {
+	function mouseWorldAim(state) {
 		try {
 			const mouse = state.session && state.session.input && state.session.input.mouse;
 			const worldPosition = mouse && mouse.worldPosition;
@@ -2584,7 +2597,7 @@
 	}
 	sandustryMP._energyToolAim = (state, toolId) => {
 		if (!isClientSync() || !sandustryMP.wsx.paused || (toolId !== "drill" && toolId !== "laser")) return false;
-		const aim = energyToolAim(state);
+		const aim = mouseWorldAim(state);
 		if (!aim) return true;
 		const now = performance.now();
 		const toolState = clientEnergyToolState(toolId);
@@ -2598,7 +2611,7 @@
 	};
 	sandustryMP._energyToolUse = (state, toolId) => {
 		if (!isClientSync() || !sandustryMP.wsx.paused || (toolId !== "drill" && toolId !== "laser")) return false;
-		const aim = energyToolAim(state);
+		const aim = mouseWorldAim(state);
 		if (!aim) return true;
 		sandustryMP._energyToolAim(state, toolId);
 		const now = performance.now();
@@ -2749,7 +2762,7 @@
 		} catch (e) { return false; }
 	};
 
-	const HOST_ACTION_KINDS = new Set(["dig", "toolAim", "toolDig", "toolStop", "place", "demolish", "upg", "tech", "tier", "story", "collect", "sig", "sbtn", "paste", "sdata", "aug", "pipeRm", "vac", "grabH", "drone", "proj", "move", "pickup", "grabPick", "grabPlace", "fireB", "shakeB", "volcB", "caulkB", "caulkRmB", "cryoB"]);
+	const HOST_ACTION_KINDS = new Set(["dig", "toolAim", "toolDig", "toolStop", "cryoUse", "place", "demolish", "upg", "tech", "tier", "story", "collect", "sig", "sbtn", "paste", "sdata", "aug", "pipeRm", "vac", "grabH", "drone", "proj", "move", "pickup", "grabPick", "grabPlace", "fireB", "shakeB", "volcB", "caulkB", "caulkRmB", "cryoB"]);
 	function finiteCoordinate(value) { return Number.isFinite(value) && Math.abs(value) <= 1000000; }
 	function validCoordinatePair(x, y) { return finiteCoordinate(x) && finiteCoordinate(y); }
 	function validCellBatch(cells, maxCells) {
@@ -2769,6 +2782,7 @@
 		if (["toolAim", "toolDig"].includes(msg.k) && (!validEnergyTool(msg.tool) || !validCoordinatePair(msg.ax, msg.ay))) return false;
 		if (msg.k === "toolDig" && (!Number.isInteger(msg.q) || msg.q <= 0)) return false;
 		if (msg.k === "toolStop" && !validEnergyTool(msg.tool)) return false;
+		if (msg.k === "cryoUse" && (!validCoordinatePair(msg.ax, msg.ay) || !Number.isInteger(msg.q) || msg.q <= 0)) return false;
 		if (["pipeRm", "demolish"].includes(msg.k)) {
 			const rect = msg.k === "demolish" ? msg.rect : msg;
 			if (!rect || ![rect.x0, rect.y0, rect.x1, rect.y1].every(finiteCoordinate) || rect.x1 < rect.x0 || rect.y1 < rect.y0 || (rect.x1 - rect.x0 + 1) * (rect.y1 - rect.y0 + 1) > 40000) return false;
@@ -2780,15 +2794,16 @@
 		}
 		return true;
 	}
-	function hostPeerToolState(peer, toolId) {
-		const states = peer.energyTools || (peer.energyTools = new Map());
+	function hostPeerToolIntentState(peer, toolId) {
+		const states = peer.toolIntents || (peer.toolIntents = new Map());
 		let toolState = states.get(toolId);
 		if (!toolState) { toolState = { active: false, startedAt: 0, lastAimAt: 0, lastUseAt: 0, lastSequence: 0, aimX: 0, aimY: 0 }; states.set(toolId, toolState); }
 		return toolState;
 	}
-	function hostOwnsEnergyTool(state, toolId) {
+	function hostOwnsTool(state, toolId) {
 		const inventory = state.store.player && state.store.player.inventory;
-		return Array.isArray(inventory) && inventory.some((item) => item && String(item.id != null ? item.id : item.typeId) === toolId);
+		const expectedId = String(toolId);
+		return Array.isArray(inventory) && inventory.some((item) => item && String(item.id != null ? item.id : item.typeId) === expectedId);
 	}
 	function hostCanUseEnergyTool(state, peer) {
 		const authorization = sandustryMP.gameApi && sandustryMP.gameApi.authorization;
@@ -2837,12 +2852,12 @@
 	}
 	function executeHostEnergyTool(state, peer, msg) {
 		const now = performance.now();
-		const toolState = hostPeerToolState(peer, msg.tool);
+		const toolState = hostPeerToolIntentState(peer, msg.tool);
 		if (msg.q <= toolState.lastSequence) return { success: false, reason: "stale" };
 		toolState.lastSequence = msg.q;
 		if (now - toolState.lastUseAt < 20) return { success: false, reason: "rate" };
 		toolState.lastUseAt = now;
-		if (!hostOwnsEnergyTool(state, msg.tool)) return { success: false, reason: "locked" };
+		if (!hostOwnsTool(state, msg.tool)) return { success: false, reason: "locked" };
 		if (!hostCanUseEnergyTool(state, peer)) return { success: false, reason: "unauthorized" };
 		if (!Number.isFinite(peer.tx) || !Number.isFinite(peer.ty) || now - (peer.lastSeen || 0) > 1500) return { success: false, reason: "position" };
 		const origin = hostEnergyToolOrigin(state, peer, msg.tool);
@@ -2879,6 +2894,48 @@
 		}
 		return excavations ? { success: true, excavations, energy: excavations } : { success: false, reason: (state.store.resources.energy || 0) > 0 ? "target" : "energy" };
 	}
+	function executeHostCryoblaster(state, peer, msg) {
+		const reject = (reason) => { if ((sandustryMP._cryoRejectLogs = (sandustryMP._cryoRejectLogs || 0) + 1) <= 20) log("HOST rejected client Cryoblaster intent:", reason); return false; };
+		const now = performance.now();
+		const toolState = hostPeerToolIntentState(peer, "cryoblaster");
+		if (msg.q <= toolState.lastSequence || now - toolState.lastUseAt < 20) return reject("sequence or rate");
+		toolState.lastSequence = msg.q; toolState.lastUseAt = now;
+		if (!Number.isFinite(peer.tx) || !Number.isFinite(peer.ty) || now - (peer.lastSeen || 0) > 1500) return reject("stale player position");
+		const nativeCryo = sandustryMP._cryoNative;
+		if (typeof nativeCryo !== "function") return reject("native particle routine is unavailable");
+		const player = state.store.player || {};
+		const remotePlayer = Object.assign({}, player, { x: peer.tx, y: peer.ty });
+		try { if (typeof sandustryMP._cryoCanUse !== "function" || !sandustryMP._cryoCanUse(state, remotePlayer)) return reject("native location validation failed"); } catch (e) { return reject("native location validation errored"); }
+		let muzzle;
+		try { muzzle = typeof sandustryMP._cryoMuzzle === "function" && sandustryMP._cryoMuzzle(remotePlayer, { x: msg.ax, y: msg.ay }); } catch (e) { return reject("native muzzle calculation errored"); }
+		if (!muzzle || !Number.isFinite(muzzle.x) || !Number.isFinite(muzzle.y) || !Number.isFinite(muzzle.angle)) return reject("invalid native muzzle or aim");
+		let outputLevel = 0;
+		try { outputLevel = Number(state.store.upgrades && state.store.upgrades.cryoblaster && state.store.upgrades.cryoblaster.output && state.store.upgrades.cryoblaster.output.level) || 0; } catch (e) {}
+		const particleCount = 5 + 2 * outputLevel;
+		const angleSpread = 0.3 + 0.1 * outputLevel;
+		const positionSpread = 8 + 4 * outputLevel;
+		const muzzleX = muzzle.x;
+		const muzzleY = muzzle.y;
+		const aimAngle = muzzle.angle;
+		const { cellIds, width, height } = worldBuffers(state);
+		if (!cellIds || !width || !height) return reject("world buffers are unavailable");
+		const cells = new Uint32Array(cellIds.buffer, cellIds.byteOffset, width * height);
+		let spawned = 0;
+		sandustryMP._applyingNet = true;
+		try {
+			for (let particleIndex = 0; particleIndex < particleCount; particleIndex++) {
+				const worldX = muzzleX + (Math.random() - 0.5) * positionSpread;
+				const worldY = muzzleY + (Math.random() - 0.5) * positionSpread;
+				const cellX = Math.floor(worldX / 4), cellY = Math.floor(worldY / 4);
+				if (cellX < 0 || cellY < 0 || cellX >= width || cellY >= height || cells[cellY * width + cellX] !== 0) continue;
+				const particleAngle = aimAngle + (Math.random() - 0.5) * angleSpread;
+				const speed = 240 * (0.8 + 0.4 * Math.random());
+				if (nativeCryo(state, cellX, cellY, { x: Math.cos(particleAngle) * speed, y: Math.sin(particleAngle) * speed })) spawned++;
+			}
+		} finally { sandustryMP._applyingNet = false; }
+		if (spawned && !sandustryMP._cryoUseLogged) { sandustryMP._cryoUseLogged = true; log("HOST: executing the client's Cryoblaster from the replicated player position"); }
+		return spawned > 0 || reject("no valid muzzle cells");
+	}
 
 	function replayAction(msg, fromId) {
 		const state = sandustryMP.state;
@@ -2890,21 +2947,23 @@
 		try {
 			if (msg.k === "toolAim") {
 				const peer = sandustryMP.peers.get(fromId);
-				const toolState = hostPeerToolState(peer, msg.tool);
+				const toolState = hostPeerToolIntentState(peer, msg.tool);
 				const now = performance.now();
 				if (!toolState.active || msg.start === true || now - toolState.lastAimAt > 250) toolState.startedAt = now;
 				toolState.active = true; toolState.lastAimAt = now; toolState.aimX = msg.ax; toolState.aimY = msg.ay;
 			} else if (msg.k === "toolStop") {
 				const peer = sandustryMP.peers.get(fromId);
-				const toolState = hostPeerToolState(peer, msg.tool);
+				const toolState = hostPeerToolIntentState(peer, msg.tool);
 				toolState.active = false; toolState.startedAt = 0; toolState.lastAimAt = 0;
 			} else if (msg.k === "toolDig") {
 				const peer = sandustryMP.peers.get(fromId);
-				const toolState = hostPeerToolState(peer, msg.tool);
+				const toolState = hostPeerToolIntentState(peer, msg.tool);
 				toolState.aimX = msg.ax; toolState.aimY = msg.ay; toolState.lastAimAt = performance.now();
 				if (msg.tool === "drill" && !toolState.active) { toolState.active = true; toolState.startedAt = toolState.lastAimAt; }
 				const result = executeHostEnergyTool(state, peer, msg);
 				sendEnergyToolResult(fromId, msg, result.success, result.reason, result.success ? { x: result.target && result.target.x, y: result.target && result.target.y, energy: result.energy, excavations: result.excavations } : null);
+			} else if (msg.k === "cryoUse") {
+				executeHostCryoblaster(state, sandustryMP.peers.get(fromId), msg);
 			} else if (msg.k === "dig") {
 				const ex = findApi("excavate", ["excavation", "patterns"]); // ns name differs between builds (current=excavation, 0.5.3=patterns)
 				if (ex) { ex(state, msg.x, msg.y, msg.m, msg.v, msg.d); if (!sandustryMP._digLogged) { sandustryMP._digLogged = true; log("HOST: first client mining recreated @", msg.x, msg.y); } }
@@ -3941,7 +4000,7 @@
 		}
 		if (gameApi && !sandustryMP.gameApi) sandustryMP.gameApi = gameApi;
 		// scene/world change detection (state reload)
-		if (sandustryMP.state !== state) { sandustryMP.state = state; sandustryMP.wsx.paused = false; sandustryMP._energyToolStates = new Map(); log("New state object detected, possibly due to a scene change"); }
+		if (sandustryMP.state !== state) { sandustryMP.state = state; sandustryMP.wsx.paused = false; sandustryMP._energyToolStates = new Map(); sandustryMP._cryoIntentState = null; log("New state object detected, possibly due to a scene change"); }
 		ensureDecisionClock(state);
 		// Garde anti-flood poses: when entering the world (change scene.active) the game reconstructs structures
 		// when running building:place → do not forward them for 3s (see sandustryMP._place).

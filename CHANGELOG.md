@@ -2,6 +2,10 @@
 
 All notable changes to SandustryMP are recorded here. Dates use the ISO `YYYY-MM-DD` format.
 
+## v0.2.7 - 2026-08-24
+
+- Recreated client Cryoblaster particles through the native host routine with their original launch velocity, preventing snow particles from dropping limply at the muzzle.
+
 ## v0.2.6 - 2026-08-24
 
 - Made client drill and mining-laser use host-authoritative: clients send their tool and aim coordinates, while the host validates the request, uses the client's position as the tool origin, performs excavation, and consumes energy.

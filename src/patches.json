@@ -232,9 +232,27 @@
    ]
   },
   {
+   "name": "cryoblaster client intent hook (_cryoUse)",
+   "critical": false,
+   "variants": [
+    {
+     "anchor": "b=(e,t)=>{if(window.SandustryMP&&window.SandustryMP._cryoUse&&window.SandustryMP._cryoUse(e))return;if(!e.session.action.state[o.qy.Active])return;",
+     "patched": "b=(e,t)=>{if(!e.session.action.state[o.qy.Active])return;if(window.SandustryMP&&window.SandustryMP._cryoUse&&window.SandustryMP._cryoUse(e))return;"
+    },
+    {
+     "anchor": "b=(e,t)=>{if(!e.session.action.state[o.qy.Active])return;",
+     "patched": "b=(e,t)=>{if(!e.session.action.state[o.qy.Active])return;if(window.SandustryMP&&window.SandustryMP._cryoUse&&window.SandustryMP._cryoUse(e))return;"
+    }
+   ]
+  },
+  {
    "name": "cryoblaster freeze hook",
    "critical": false,
    "variants": [
+    {
+     "anchor": "x={x:Math.cos(b)*U,y:Math.sin(b)*U};window.SandustryMP&&window.SandustryMP._cryo&&window.SandustryMP._cryo(e,i,l,x),(0,h.Lu)(e,i,l,e=>{if(!(0,u.lV)(e,i,l))return",
+     "patched": "x={x:Math.cos(b)*U,y:Math.sin(b)*U};window.SandustryMP&&window.SandustryMP._cryo&&window.SandustryMP._cryo(e,i,l),(0,h.Lu)(e,i,l,e=>{if(!(0,u.lV)(e,i,l))return"
+    },
     {
      "anchor": "const b=i;(0,u.Lu)(e,s,r,e=>{if(!(0,f.lV)(e,s,r))return",
      "patched": "const b=i;window.SandustryMP&&window.SandustryMP._cryo&&window.SandustryMP._cryo(e,s,r),(0,u.Lu)(e,s,r,e=>{if(!(0,f.lV)(e,s,r))return"
@@ -242,6 +260,28 @@
     {
      "anchor": "x={x:Math.cos(b)*U,y:Math.sin(b)*U};(0,h.Lu)(e,i,l,e=>{if(!(0,u.lV)(e,i,l))return",
      "patched": "x={x:Math.cos(b)*U,y:Math.sin(b)*U};window.SandustryMP&&window.SandustryMP._cryo&&window.SandustryMP._cryo(e,i,l),(0,h.Lu)(e,i,l,e=>{if(!(0,u.lV)(e,i,l))return"
+    }
+   ]
+  },
+  {
+   "name": "cryoblaster native particle export (_cryoNative)",
+   "critical": false,
+   "variants": [
+    {
+     "anchor": "window.SandustryMP&&(window.SandustryMP._cryoToolId=o.Np.Cryoblaster,window.SandustryMP._cryoCanUse=(e,t)=>(0,m.Ie)(e,t),window.SandustryMP._cryoMuzzle=(e,t)=>{const n=i.A.getGunArmAxis(e),a=i.A.getAngle(n,t),o=i.A.getPointFromAngleAndDistance(n,a,24);return{x:o.x,y:o.y,angle:a}},window.SandustryMP._cryoNative=(e,t,n,a)=>{const i=(0,c.n)(o.RJ.FreezingIce,t,n),l=(0,s.t2)(e.shared.sim,i);if(0===l)return!1;const u=s.on.getElementIndexFromCellId(l);return!!(0,d.J)(e,t,n,u,a)});const U=()=>({id:o.Np.Cryoblaster,itemType:o.SP.Tool",
+     "patched": "window.SandustryMP&&(window.SandustryMP._cryoToolId=o.Np.Cryoblaster,window.SandustryMP._cryoCanUse=(e,t)=>(0,m.Ie)(e,t),window.SandustryMP._cryoMuzzle=(e,t)=>{const n=i.A.getGunArmAxis(e),a=i.A.getAngle(n,t),o=i.A.getPointFromAngleAndDistance(n,a,24);return{x:o.x,y:o.y,angle:a*Math.PI/180}},window.SandustryMP._cryoNative=(e,t,n,a)=>{const i=(0,c.n)(o.RJ.FreezingIce,t,n),l=(0,s.t2)(e.shared.sim,i);if(0===l)return!1;const u=s.on.getElementIndexFromCellId(l);return!!(0,d.J)(e,t,n,u,a)});const U=()=>({id:o.Np.Cryoblaster,itemType:o.SP.Tool"
+    },
+    {
+     "anchor": "window.SandustryMP&&(window.SandustryMP._cryoToolId=o.Np.Cryoblaster,window.SandustryMP._cryoCanUse=(e,t)=>(0,m.Ie)(e,t),window.SandustryMP._cryoNative=(e,t,n,a)=>{const i=(0,c.n)(o.RJ.FreezingIce,t,n),l=(0,s.t2)(e.shared.sim,i);if(0===l)return!1;const u=s.on.getElementIndexFromCellId(l);return!!(0,d.J)(e,t,n,u,a)});const U=()=>({id:o.Np.Cryoblaster,itemType:o.SP.Tool",
+     "patched": "window.SandustryMP&&(window.SandustryMP._cryoToolId=o.Np.Cryoblaster,window.SandustryMP._cryoCanUse=(e,t)=>(0,m.Ie)(e,t),window.SandustryMP._cryoMuzzle=(e,t)=>{const n=i.A.getGunArmAxis(e),a=i.A.getAngle(n,t),o=i.A.getPointFromAngleAndDistance(n,a,24);return{x:o.x,y:o.y,angle:a*Math.PI/180}},window.SandustryMP._cryoNative=(e,t,n,a)=>{const i=(0,c.n)(o.RJ.FreezingIce,t,n),l=(0,s.t2)(e.shared.sim,i);if(0===l)return!1;const u=s.on.getElementIndexFromCellId(l);return!!(0,d.J)(e,t,n,u,a)});const U=()=>({id:o.Np.Cryoblaster,itemType:o.SP.Tool"
+    },
+    {
+     "anchor": "window.SandustryMP&&(window.SandustryMP._cryoNative=(e,t,n,a)=>{const i=(0,c.n)(o.RJ.FreezingIce,t,n),l=(0,s.t2)(e.shared.sim,i);if(0===l)return!1;const u=s.on.getElementIndexFromCellId(l);return!!(0,d.J)(e,t,n,u,a)});const U=()=>({id:o.Np.Cryoblaster,itemType:o.SP.Tool",
+     "patched": "window.SandustryMP&&(window.SandustryMP._cryoToolId=o.Np.Cryoblaster,window.SandustryMP._cryoCanUse=(e,t)=>(0,m.Ie)(e,t),window.SandustryMP._cryoMuzzle=(e,t)=>{const n=i.A.getGunArmAxis(e),a=i.A.getAngle(n,t),o=i.A.getPointFromAngleAndDistance(n,a,24);return{x:o.x,y:o.y,angle:a*Math.PI/180}},window.SandustryMP._cryoNative=(e,t,n,a)=>{const i=(0,c.n)(o.RJ.FreezingIce,t,n),l=(0,s.t2)(e.shared.sim,i);if(0===l)return!1;const u=s.on.getElementIndexFromCellId(l);return!!(0,d.J)(e,t,n,u,a)});const U=()=>({id:o.Np.Cryoblaster,itemType:o.SP.Tool"
+    },
+    {
+     "anchor": "const U=()=>({id:o.Np.Cryoblaster,itemType:o.SP.Tool",
+     "patched": "window.SandustryMP&&(window.SandustryMP._cryoToolId=o.Np.Cryoblaster,window.SandustryMP._cryoCanUse=(e,t)=>(0,m.Ie)(e,t),window.SandustryMP._cryoMuzzle=(e,t)=>{const n=i.A.getGunArmAxis(e),a=i.A.getAngle(n,t),o=i.A.getPointFromAngleAndDistance(n,a,24);return{x:o.x,y:o.y,angle:a*Math.PI/180}},window.SandustryMP._cryoNative=(e,t,n,a)=>{const i=(0,c.n)(o.RJ.FreezingIce,t,n),l=(0,s.t2)(e.shared.sim,i);if(0===l)return!1;const u=s.on.getElementIndexFromCellId(l);return!!(0,d.J)(e,t,n,u,a)});const U=()=>({id:o.Np.Cryoblaster,itemType:o.SP.Tool"
     }
    ]
   },
