@@ -1,10 +1,10 @@
 @echo off
 title SandustryMP by Cr0ss0vr
-rem Umiesc ten plik w glownym folderze gry Sandustry (obok Sandustry.exe).
-rem Usuwa app.asar jesli Steam go odtworzyl (inaczej gra zaladuje wersje bez moda),
-rem po czym uruchamia gre.
+rem Place this file in the main Sandustry game folder (next to Sandustry.exe).
+rem It removes app.asar if Steam has restored it (otherwise the game will load the version without the mod),
+rem then launches the game.
 if exist "%~dp0resources\app.asar" (
-    echo Steam odtworzyl app.asar - usuwam, zeby mod dzialal...
+    echo Steam restored app.asar - removing it so the mod works...
     del /f /q "%~dp0resources\app.asar"
 )
 start "" "%~dp0Sandustry.exe"
