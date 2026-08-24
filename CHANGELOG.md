@@ -2,6 +2,10 @@
 
 All notable changes to SandustryMP are recorded here. Dates use the ISO `YYYY-MM-DD` format.
 
+## v0.2.5 - 2026-08-24
+
+- Added persistent per-player positions and hotbars to the host world save, allowing multiplayer clients to return with their own saved location and toolbar across sessions.
+
 ## v0.2.4 - 2026-08-23
 
 - Fixed angled foundation demolition by capturing the structure’s actual footprint before removal, ensuring orphaned tiles outside the selected demolition area are cleaned up correctly.

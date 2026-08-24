@@ -131,6 +131,117 @@
 	let profileSave;
 	let profileRestore;
 
+	// ------------------------------------------------------------------
+	// Persistent multiplayer player identity/state (host-save authoritative)
+	// ------------------------------------------------------------------
+	const SMP_PLAYER_ID_PREFIX = "sandustrymp_player_id:";
+	function getSmpProfileName() {
+		// `--smp-profile=name` is intended for running multiple LAN clients from one machine.
+		// SandustryMP's existing `--smp-userdata=...` launcher isolation also gives each
+		// instance a separate localStorage, so the default profile remains distinct there.
+		try {
+			const argv = (typeof process !== "undefined" && process && Array.isArray(process.argv)) ? process.argv
+				: (window.process && Array.isArray(window.process.argv) ? window.process.argv : []);
+			for (let i = 0; i < argv.length; i++) {
+				const arg = String(argv[i] || "");
+				if (arg.startsWith("--smp-profile=")) return arg.slice(14).trim() || "default";
+				if (arg === "--smp-profile" && argv[i + 1]) return String(argv[i + 1]).trim() || "default";
+			}
+		} catch (e) {}
+		try {
+			const queryProfile = new URLSearchParams(location.search).get("smp-profile");
+			if (queryProfile) return queryProfile.trim() || "default";
+		} catch (e) {}
+		return "default";
+	}
+	function getPersistentPlayerId() {
+		if (sandustryMP._persistentPlayerId) return sandustryMP._persistentPlayerId;
+		const profile = getSmpProfileName().slice(0, 64);
+		const key = SMP_PLAYER_ID_PREFIX + profile;
+		let id = null;
+		try { id = localStorage.getItem(key); } catch (e) {}
+		if (!id || !/^[A-Za-z0-9._:-]{8,128}$/.test(id)) {
+			try { id = crypto.randomUUID(); } catch (e) { id = "p-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 14); }
+			try { localStorage.setItem(key, id); } catch (e) {}
+		}
+		sandustryMP._persistentPlayerId = id;
+		sandustryMP._smpProfileName = profile;
+		return id;
+	}
+	function cloneSerializable(value) {
+		try { return JSON.parse(JSON.stringify(value)); } catch (e) { return null; }
+	}
+	function snapshotLocalHotbar(state) {
+		const hb = state && state.store && state.store.player && state.store.player.hotbar;
+		if (!hb || !Array.isArray(hb.bars)) return null;
+		const bars = cloneSerializable(hb.bars);
+		if (!Array.isArray(bars)) return null;
+		return {
+			bars,
+			hotbarIndex: Number.isInteger(hb.hotbarIndex) ? hb.hotbarIndex : 0,
+			activeSlotIndex: Number.isInteger(hb.activeSlotIndex) ? hb.activeSlotIndex : 0,
+		};
+	}
+	function sanitizePersistentHotbar(value) {
+		if (!value || !Array.isArray(value.bars) || value.bars.length > 32) return null;
+		const bars = cloneSerializable(value.bars);
+		if (!Array.isArray(bars)) return null;
+		let totalSlots = 0;
+		for (const bar of bars) {
+			if (!Array.isArray(bar) || bar.length > 64) return null;
+			totalSlots += bar.length;
+		}
+		if (totalSlots > 512) return null;
+		return {
+			bars,
+			hotbarIndex: Number.isInteger(value.hotbarIndex) ? Math.max(0, Math.min(bars.length - 1, value.hotbarIndex)) : 0,
+			activeSlotIndex: Number.isInteger(value.activeSlotIndex) ? Math.max(0, Math.min(63, value.activeSlotIndex)) : 0,
+		};
+	}
+	function persistentPlayersStore(state, create) {
+		if (!state || !state.store) return null;
+		if (!state.store.mods) { if (!create) return null; state.store.mods = {}; }
+		if (!state.store.mods.sandustryMPPlayers || typeof state.store.mods.sandustryMPPlayers !== "object" || Array.isArray(state.store.mods.sandustryMPPlayers)) {
+			if (!create) return null;
+			state.store.mods.sandustryMPPlayers = {};
+		}
+		return state.store.mods.sandustryMPPlayers;
+	}
+	function validPersistentPosition(value) {
+		return value && Number.isFinite(value.x) && Number.isFinite(value.y) && Math.abs(value.x) <= 10000000 && Math.abs(value.y) <= 10000000;
+	}
+	function applyPersistentPlayerState(state, saved) {
+		if (!state || !state.store || !state.store.player) return false;
+		const player = state.store.player;
+		if (saved && validPersistentPosition(saved.position)) { player.x = saved.position.x; player.y = saved.position.y; }
+		const hotbar = saved && sanitizePersistentHotbar(saved.hotbar);
+		if (hotbar && player.hotbar) {
+			player.hotbar.bars = hotbar.bars;
+			player.hotbar.hotbarIndex = hotbar.hotbarIndex;
+			player.hotbar.activeSlotIndex = hotbar.activeSlotIndex;
+			try { sandustryMP.gameApi.ui && sandustryMP.gameApi.ui.overlays && sandustryMP.gameApi.ui.overlays.update && sandustryMP.gameApi.ui.overlays.update(state, "hotbar"); } catch (e) {}
+		}
+		return true;
+	}
+	function sendPersistentIdentityIfDue(state, now) {
+		if (sandustryMP.net.role !== "client" || !sandustryMP._baseWorldReady || !sandustryMP.peers.size || sandustryMP._persistentStateReady) return;
+		if (now - (sandustryMP._persistentIdentityT || 0) < 1000) return;
+		sandustryMP._persistentIdentityT = now;
+		try { net.send({ t: "pident", id: getPersistentPlayerId(), profile: sandustryMP._smpProfileName || getSmpProfileName() }); } catch (e) {}
+	}
+	function sendPersistentPlayerStateIfDue(state, now, force) {
+		if (sandustryMP.net.role !== "client" || !sandustryMP._persistentStateReady || !state || !state.store || !state.store.player) return;
+		if (!force && now - (sandustryMP._persistentStateSendT || 0) < 1000) return;
+		sandustryMP._persistentStateSendT = now;
+		const pl = state.store.player;
+		const payload = { position: { x: Math.round(pl.x * 10) / 10, y: Math.round(pl.y * 10) / 10 }, hotbar: snapshotLocalHotbar(state) };
+		let serialized = null; try { serialized = JSON.stringify(payload); } catch (e) {}
+		if (!force && serialized && serialized === sandustryMP._persistentStateLast && now - (sandustryMP._persistentStateFullT || 0) < 10000) return;
+		sandustryMP._persistentStateLast = serialized;
+		sandustryMP._persistentStateFullT = now;
+		try { net.send({ t: "pstateUpdate", id: getPersistentPlayerId(), state: payload }); } catch (e) {}
+	}
+
 	// Grabber (client): reset the cellId locally and remember it so that the grabber doesn't take it again
 	// before the host confirms the deletion via the mirror. Called only on the client side (mirror renderer).
 	function grabClearLocal(state, x, y) {
@@ -270,7 +381,51 @@
 			if (p && typeof msg.ts === "number") { const rtt = performance.now() - msg.ts; p.ping = p.ping != null ? Math.round(p.ping * 0.7 + rtt * 0.3) : Math.round(rtt); }
 			return;
 		}
-		if (msg.t === "pos") {
+		if (msg.t === "pident") {
+			if (sandustryMP.net.role !== "host" || !sandustryMP.state || typeof msg.id !== "string" || !/^[A-Za-z0-9._:-]{8,128}$/.test(msg.id)) return;
+			const peer = sandustryMP.peers.get(from) || { x: 0, y: 0, tx: 0, ty: 0, lastSeen: performance.now() };
+			peer.playerId = msg.id;
+			peer.playerProfile = typeof msg.profile === "string" ? msg.profile.slice(0, 64) : "default";
+			peer.playerStateReady = false;
+			sandustryMP.peers.set(from, peer);
+			const records = persistentPlayersStore(sandustryMP.state, false);
+			const saved = records && records[msg.id] ? cloneSerializable(records[msg.id]) : null;
+			try { net.send({ t: "pstate", id: msg.id, state: saved }, from); } catch (e) {}
+			log("HOST persistent player identity:", peer.nick || from, msg.id, saved ? "restore found" : "new player");
+			return;
+		} else if (msg.t === "pstate") {
+			if (sandustryMP.net.role !== "client" || !sandustryMP._baseWorldReady || msg.id !== getPersistentPlayerId() || !sandustryMP.state) return;
+			const restored = msg.state && typeof msg.state === "object" ? msg.state : sandustryMP._hostPlayerBaseline;
+			applyPersistentPlayerState(sandustryMP.state, restored);
+			// Reconcile after restoring the client's own layout so a saved hotbar cannot
+			// bypass technology/building unlocks in the authoritative host world.
+			try { reconcileClientBuildingHotbar(sandustryMP.state, sandustryMP.state.store.player && sandustryMP.state.store.player.buildings); } catch (e) {}
+			sandustryMP._persistentStateReady = true;
+			sandustryMP._persistentStateLast = null;
+			try { net.send({ t: "pstateAck", id: msg.id }); } catch (e) {}
+			sendPersistentPlayerStateIfDue(sandustryMP.state, performance.now(), true);
+			log("CLIENT persistent player state", msg.state ? "restored from host save" : "initialized from host world", "id", msg.id);
+			return;
+		} else if (msg.t === "pstateAck") {
+			if (sandustryMP.net.role !== "host" || typeof msg.id !== "string") return;
+			const peer = sandustryMP.peers.get(from);
+			if (peer && peer.playerId === msg.id) peer.playerStateReady = true;
+			return;
+		} else if (msg.t === "pstateUpdate") {
+			if (sandustryMP.net.role !== "host" || !sandustryMP.state || typeof msg.id !== "string") return;
+			const peer = sandustryMP.peers.get(from);
+			if (!peer || peer.playerId !== msg.id || !msg.state || typeof msg.state !== "object") return;
+			const records = persistentPlayersStore(sandustryMP.state, true);
+			const existing = records[msg.id] && typeof records[msg.id] === "object" ? records[msg.id] : {};
+			const next = { nickname: (peer.nick || "?").slice(0, 64) };
+			if (validPersistentPosition(msg.state.position)) next.position = { x: msg.state.position.x, y: msg.state.position.y };
+			else if (validPersistentPosition(existing.position)) next.position = existing.position;
+			const hotbar = sanitizePersistentHotbar(msg.state.hotbar);
+			if (hotbar) next.hotbar = hotbar; else if (existing.hotbar) next.hotbar = existing.hotbar;
+			records[msg.id] = next;
+			peer.lastPersistentState = performance.now();
+			return;
+		} else if (msg.t === "pos") {
 			let p = sandustryMP.peers.get(from);
 			const now0 = performance.now();
 			if (!p) { p = { nick: "?", x: msg.x, y: msg.y, tx: msg.x, ty: msg.y, vx: 0, vy: 0, tUpdate: now0, lastSeen: 0 }; sandustryMP.peers.set(from, p); }
@@ -940,7 +1095,11 @@
 		}
 		if (appliedChunkCount > 0 && !worldSync.everApplied) {
 			worldSync.everApplied = true; log("First world packages applied - mirror works"); setStatus(t("players", sandustryMP.peers.size + 1));
-			profileRestore(state, msg.wid || sandustryMP._trustedWid); // go back where you left off in TYM world (G7-lite)
+			// Preserve the just-loaded host-save player state as the first-join fallback.
+			// The legacy local profile may still restore equipment, but position/hotbar are
+			// subsequently replaced by the host-authoritative multiplayer player record.
+			sandustryMP._hostPlayerBaseline = { position: { x: state.store.player.x, y: state.store.player.y }, hotbar: snapshotLocalHotbar(state) };
+			profileRestore(state, msg.wid || sandustryMP._trustedWid); // legacy equipment/local profile restore
 			// AUTO-RESYNC (fix TCentraL "big map"): initial flood (enqueueFullWorld via peer-hello) was running
 			// when the client was still in MENU/load and was DROPOWANY and the host's rowH considers it delivered
 			// → without it there are constantly holes in the world until the manual Resync. Raz per session (_autoResynced flag).
@@ -3636,6 +3795,9 @@
 				sandustryMP._finishingTransferLoad = true;
 				localStorage.removeItem("smp_pending_transfer_load");
 				sandustryMP._baseWorldReady = true;
+				sandustryMP._persistentStateReady = false;
+				sandustryMP._persistentIdentityT = 0;
+				sandustryMP._persistentStateLast = null;
 				sandustryMP._worldRxDone = true;
 				sandustryMP._gotHostWorld = true;
 				sandustryMP._pendingTrustUntil = now + 15000;
@@ -3649,6 +3811,10 @@
 			sandustryMP._pendingPostLoadResync = false;
 			sandustryMP._autoResynced = true;
 			try { net.send({ t: "resync" }); log("AUTO-RESYNC after imported host save finished loading"); } catch (e) { sandustryMP._pendingPostLoadResync = true; }
+		}
+		if (sandustryMP.net.role === "client" && sandustryMP._baseWorldReady) {
+			sendPersistentIdentityIfDue(state, now);
+			sendPersistentPlayerStateIfDue(state, now, false);
 		}
 		updateClientConveyorAnimations(state);
 		if (net && sandustryMP.net.role !== "idle" && state.store && state.store.player && now - sandustryMP._lastPosSend > 33) {
@@ -3884,7 +4050,8 @@
 			// During this window it previously caused `net.stop()` → reconnect → transfer → load loops (ZeroHazard report).
 			if (sandustryMP.wsx.everApplied && sandustryMP.wsx.wasInWorld && !sandustryMP._loadingWorld && state.store.scene && state.store.scene.active === 1) {
 				log("Client returned to the title menu; leaving the co-op session");
-				profileSave(state); // Save per-world position and equipment while paused, as required by `profileSave`.
+				profileSave(state); // Save legacy per-world equipment profile.
+				sendPersistentPlayerStateIfDue(state, performance.now(), true); // host-save position + hotbar checkpoint
 				setClientPaused(false);
 				try { net.stop(); } catch (e) {}
 				setStatus(t("left_to_menu"), "#fd5");
