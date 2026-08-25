@@ -2,6 +2,14 @@
 
 All notable changes to SandustryMP are recorded here. Dates use the ISO `YYYY-MM-DD` format.
 
+## v0.3.5 - 2026-08-25
+
+- Allow Sandustry's native client move transaction to finish instead of intercepting each destination as an unrelated placement request.
+- Parse Sandustry's native move-event source and destination coordinates correctly for client move requests.
+- Resolve move sources against the host world, remove them through the complete native cell and worker path, and validate every destination before placement.
+- Retry source structures that survive deferred removal and clean unowned foundation cells from their captured footprints.
+- Restore source structures when the host rejects their destination instead of allowing an incomplete move to duplicate structures.
+
 ## v0.3.4 - 2026-08-25
 
 - Remove mushrooms, long grass, crystals, and other attached foliage on clients when their supporting terrain is removed by the host.

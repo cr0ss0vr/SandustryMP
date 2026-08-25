@@ -16,7 +16,7 @@
 			window.electron && window.electron.log && window.electron.log("info", "SandustryMP:game", line);
 		} catch (e) {}
 	};
-	const VER = "v0.3.4";
+	const VER = "v0.3.5";
 	const AUTHOR = "Cr0ss0vr";
 	const CONTRIBUTORS = "";
 	const VACUUM_CAPS = [500, 1000, 1500, 2000, 2500, 3000]; // capacity table from the game code (module 6420)
@@ -1154,6 +1154,16 @@
 	// completed structures. `frame` is paired native foundation state.
 	const slimStruct = (s) => ({ type: s.type, x: s.x, y: s.y, data: s.data, filter: s.filter, queued: s.queued === true, frame: s.frame === true });
 	const structKey = (s) => s.type + "@" + s.x + "," + s.y;
+	function normalizeMovedStructures(data) {
+		const moved = (data && Array.isArray(data.moved)) ? data.moved : [];
+		const from = [], to = [];
+		for (const movement of moved) {
+			if (!movement || !movement.from || !movement.to || movement.type == null) continue;
+			from.push({ type: movement.type, x: movement.from.x, y: movement.from.y });
+			to.push({ type: movement.type, x: movement.to.x, y: movement.to.y, data: movement.data, filter: movement.filter });
+		}
+		return { from, to };
+	}
 	// KONFIG MASZYN by client (G5b): structure.data editions in the machine UI do not have an event - we detect
 	// It diffs JSON near the player, where edits occur; scanning thousands of structures every frame is too expensive.
 	const dataSeenSet = (k, d) => { if (!sandustryMP._dataSeen) sandustryMP._dataSeen = new Map(); try { sandustryMP._dataSeen.set(k, JSON.stringify(d == null ? null : d)); } catch (e) {} };
@@ -1208,11 +1218,13 @@
 			});
 			sandustryMP.gameApi.events.on(state, "structures:moved", (st, data) => {
 				if (sandustryMP._applyingNet || sandustryMP.net.role === "idle") return;
-				const to = ((data && data.moved) || []).map(slimStruct);
-				const from = sandustryMP._moveStash; sandustryMP._moveStash = [];
+				const normalizedMove = normalizeMovedStructures(data);
+				const from = normalizedMove.from;
+				const to = normalizedMove.to;
+				sandustryMP._moveStash = [];
 				if (!to.length || !from.length) return;
 				if (sandustryMP.net.role === "host") net.send({ t: "st", k: "mv", from, to });
-				else net.send({ t: "act", k: "move", from, to });
+				else { net.send({ t: "act", k: "move", from, to }); log("CLIENT move ->", from.length, "structures"); }
 			});
 			sandustryMP.gameApi.events.on(state, "worldItem:pickedUp", (st, data) => {
 				if (sandustryMP._applyingNet || sandustryMP.net.role !== "client" || !sandustryMP.wsx.paused || !data || !data.item) return;
@@ -1538,6 +1550,12 @@
 	}
 	function removeOne(state, s) {
 		try { const SA = structNs(); if (SA) SA.removeAt(state, s.x, s.y, {}); } catch (e) { log("removeOne error:", e.message); }
+	}
+	function removeStructuresForMove(state, structuresApi, structures) {
+		for (const structure of structures) {
+			structuresApi.removeAt(state, structure.x, structure.y, { removeCells: true, skipWorkerSync: false });
+			markCellDirty(state, structure.x, structure.y);
+		}
 	}
 
 	function applyNetStructs(msg) {
@@ -2740,6 +2758,12 @@
 		// Network-applied placement passes through `building:place`; do not capture it or confirmed rendering would be canceled.
 		// Otherwise the client sees no buildings at all, either its own or the host's. This regressed after switching bundle patches.
 		if (sandustryMP._applyingNet) return false;
+		// A move is one native transaction: remove the selected sources, build the
+		// destinations, then emit `structures:moved` with exact from/to pairs. Capturing
+		// its internal builds here turns them into unrelated placement requests and
+		// prevents the source deletion from ever reaching the host.
+		const actionCustomData = state.session && state.session.action && state.session.action.customData;
+		if (actionCustomData && actionCustomData.mode === 3) return false; // SelectionMode.Moving
 		if (structureType == null) return false; // no type → do not block the game
 		// KLUCZOWY FIX (0.5.4): we forward ANY type (string I NUMERYCZNY = enum ev). Wczesleep lock
 		// Requiring `typeof === "string"` rejected numeric structure types, so most buildings were never forwarded.
@@ -2849,6 +2873,13 @@
 		if (["paste", "move"].includes(msg.k)) {
 			const count = msg.k === "paste" ? (Array.isArray(msg.list) ? msg.list.length : -1) : (Array.isArray(msg.from) && Array.isArray(msg.to) ? msg.from.length + msg.to.length : -1);
 			if (count < 0 || count > 1024) return false;
+			if (msg.k === "move") {
+				if (msg.from.length !== msg.to.length || !msg.from.length) return false;
+				for (let index = 0; index < msg.from.length; index++) {
+					const from = msg.from[index], to = msg.to[index];
+					if (!from || !to || from.type == null || to.type == null || from.type !== to.type || !validCoordinatePair(from.x, from.y) || !validCoordinatePair(to.x, to.y)) return false;
+				}
+			}
 		}
 		return true;
 	}
@@ -3309,9 +3340,58 @@
 				const p = msg.p;
 				if (p) { const arr = state.store.projectiles || (state.store.projectiles = []); arr.push(p); if ((sandustryMP._prHDiag = (sandustryMP._prHDiag || 0) + 1) <= 20) log("HOST: client missile added", p.type, "@", Math.round(p.x), Math.round(p.y), "(proj=" + arr.length + ")"); }
 			} else if (msg.k === "move") {
+				const structuresApi = structNs();
+				if (!structuresApi) return;
+				const sourceKeys = new Set();
+				const movePairs = [];
+				for (let index = 0; index < msg.from.length; index++) {
+					const requestedSource = msg.from[index], requestedDestination = msg.to[index];
+					const source = structuresApi.getAtCell(state, requestedSource.x, requestedSource.y);
+					if (!source || source.x !== requestedSource.x || source.y !== requestedSource.y || source.type !== requestedSource.type || requestedDestination.type !== source.type) continue;
+					const sourceKey = structKey(source);
+					if (sourceKeys.has(sourceKey)) continue;
+					sourceKeys.add(sourceKey);
+					movePairs.push({ source: slimStruct(source), destination: requestedDestination });
+				}
+				if (!movePairs.length) return;
+				const movedFrom = [], movedTo = [], failedSources = [];
+				const cleanupCells = [];
+				const cleanupCellKeys = new Set();
+				for (const pair of movePairs) {
+					for (const cell of captureStructureCells(state, structuresApi, structuresApi.getAtCell(state, pair.source.x, pair.source.y), pair.source.x, pair.source.y)) {
+						const cellKey = cell[0] + "," + cell[1];
+						if (!cleanupCellKeys.has(cellKey)) { cleanupCellKeys.add(cellKey); cleanupCells.push(cell); }
+					}
+				}
 				sandustryMP._applyingNet = true;
-				try { for (const s of msg.from) removeOne(state, s); for (const s of msg.to) buildOne(state, s); } finally { sandustryMP._applyingNet = false; }
-				net.send({ t: "st", k: "mv", from: msg.from, to: msg.to });
+				try {
+					removeStructuresForMove(state, structuresApi, movePairs.map((pair) => pair.source));
+					for (const pair of movePairs) {
+						const instruction = getNativePlacementInstruction(state, pair.source.type, pair.destination.x, pair.destination.y, false);
+						let built = null;
+						if (instruction && instruction.clearance !== CLEARANCE_FULLY_BLOCKED && instruction.structureType === pair.source.type) {
+							built = buildOne(state, { type: pair.source.type, x: instruction.x, y: instruction.y, clearance: instruction.clearance, data: pair.source.data, filter: pair.source.filter }, false);
+						}
+						if (built) { movedFrom.push(pair.source); movedTo.push(slimStruct(built)); }
+						else { buildOne(state, pair.source, false); failedSources.push(pair.source); }
+					}
+					try {
+						const moved = movedFrom.map((source, index) => ({ from: { x: source.x, y: source.y }, to: { x: movedTo[index].x, y: movedTo[index].y }, type: source.type, data: source.data, filter: source.filter }));
+						const failedToPlace = failedSources.map((source) => ({ from: { x: source.x, y: source.y }, type: source.type, data: source.data, filter: source.filter }));
+						sandustryMP.gameApi.events.emit(state, "structures:moved", { moved, failedToPlace });
+					} catch (e) {}
+				} finally { sandustryMP._applyingNet = false; }
+				let cleanupX0 = Infinity, cleanupY0 = Infinity, cleanupX1 = -Infinity, cleanupY1 = -Infinity;
+				for (const pair of movePairs) {
+					cleanupX0 = Math.min(cleanupX0, pair.source.x); cleanupY0 = Math.min(cleanupY0, pair.source.y);
+					cleanupX1 = Math.max(cleanupX1, pair.source.x); cleanupY1 = Math.max(cleanupY1, pair.source.y);
+				}
+				const destinationAnchors = new Set(movedTo.map((destination) => destination.x + "," + destination.y));
+				const cleanupTargets = movedFrom.filter((source) => !destinationAnchors.has(source.x + "," + source.y)).map((source) => ({ type: source.type, x: source.x, y: source.y }));
+				sandustryMP._hostDemolRect = { x0: cleanupX0, y0: cleanupY0, x1: cleanupX1, y1: cleanupY1, t: performance.now(), src: "client", cleanOrphans: false, cleanupCells, targets: cleanupTargets };
+				if (movedFrom.length) net.send({ t: "st", k: "mv", from: movedFrom, to: movedTo });
+				if (failedSources.length) net.send({ t: "st", k: "add", list: failedSources });
+				log("HOST move result:", movedFrom.length, "moved,", failedSources.length, "restored");
 			} else if (msg.k === "pickup") {
 				const items = (sandustryMP.gameApi.world && sandustryMP.gameApi.world.items) || deepFindNs("items", "pickUp");
 				const item = items && items.getById ? items.getById(state, msg.id) : (state.store.worldItems || []).find((i) => i.id === msg.id);
@@ -4206,12 +4286,19 @@
 					const SA = structNs();
 					if (SA && (hd.x1 - hd.x0 + 1) * (hd.y1 - hd.y0 + 1) <= 40000) {
 						const leftovers = new Map();
-						for (let y = hd.y0; y <= hd.y1; y++) for (let x = hd.x0; x <= hd.x1; x++) {
+						if (Array.isArray(hd.targets)) {
+							for (const target of hd.targets) {
+								try {
+									const st = SA.getAtCell(state, target.x, target.y);
+									if (st && st.x === target.x && st.y === target.y && st.type === target.type) leftovers.set(structKey(st), st);
+								} catch (e) {}
+							}
+						} else for (let y = hd.y0; y <= hd.y1; y++) for (let x = hd.x0; x <= hd.x1; x++) {
 							try { const st = SA.getAtCell(state, x, y); if (st) leftovers.set(structKey(st), st); } catch (e) {}
 						}
 						if (leftovers.size) {
 							log("Demolition cleanup: the game skipped", leftovers.size, "structures (queued tiles?) — removing them with removeAt");
-							for (const st of leftovers.values()) { try { SA.removeAt(state, st.x, st.y, {}); } catch (e) {} }
+							for (const st of leftovers.values()) { try { SA.removeAt(state, st.x, st.y, { removeCells: true, skipWorkerSync: false }); markCellDirty(state, st.x, st.y); } catch (e) {} }
 							if (sandustryMP.net.role === "host" && sandustryMP.peers.size) try { net.send({ t: "st", k: "rm", list: [...leftovers.values()].map(slimStruct) }); } catch (e) {}
 							// removeAt can only queue removal. In the same pass getAtCell continues
 							// can see the structure, so the following sweep of the area will rightly not move its red tiles.
