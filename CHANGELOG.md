@@ -2,6 +2,15 @@
 
 All notable changes to SandustryMP are recorded here. Dates use the ISO `YYYY-MM-DD` format.
 
+## v0.3.9 - 2026-08-25
+
+- Preserve Sandustry's native Gold-only shaker filter when the host executes a client's placement request, restoring shaker processing.
+- Apply a client's selected material filter only to native player-configurable filter structures.
+- Forward post-placement advanced-filter group edits to the host and propagate the complete multi-element selection to simulation workers.
+- Preserve Sandustry's native liquid and gas handling flags on client-configured Mk2 advanced filters so selected fluids are actually allowed or blocked.
+- Recognize Sandustry's numeric Pipe structure selection in the client deconstruction overlay and route it exclusively through native pipe removal.
+- Immediately relay the host-confirmed pipe removals to clients so recently placed pipes do not remain visible until snapshot reconciliation.
+
 ## v0.3.8 - 2026-08-25
 
 - Refresh the host's resource HUD immediately after an accepted client upgrade deducts its cost from the shared Fluxite pool.

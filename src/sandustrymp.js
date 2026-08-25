@@ -16,7 +16,7 @@
 			window.electron && window.electron.log && window.electron.log("info", "SandustryMP:game", line);
 		} catch (e) {}
 	};
-	const VER = "v0.3.8";
+	const VER = "v0.3.9";
 	const AUTHOR = "Cr0ss0vr";
 	const CONTRIBUTORS = "";
 	const VACUUM_CAPS = [500, 1000, 1500, 2000, 2500, 3000]; // capacity table from the game code (module 6420)
@@ -1168,7 +1168,10 @@
 	}
 	// KONFIG MASZYN by client (G5b): structure.data editions in the machine UI do not have an event - we detect
 	// It diffs JSON near the player, where edits occur; scanning thousands of structures every frame is too expensive.
-	const dataSeenSet = (k, d) => { if (!sandustryMP._dataSeen) sandustryMP._dataSeen = new Map(); try { sandustryMP._dataSeen.set(k, JSON.stringify(d == null ? null : d)); } catch (e) {} };
+	const dataSeenSet = (key, data, filter) => {
+		if (!sandustryMP._dataSeen) sandustryMP._dataSeen = new Map();
+		try { sandustryMP._dataSeen.set(key, JSON.stringify({ data: data == null ? null : data, filter: filter == null ? null : filter })); } catch (e) {}
+	};
 	function scanDataEditsIfDue(state) {
 		const now = performance.now();
 		if (now - (sandustryMP._dataScanT || 0) < 800) return;
@@ -1181,12 +1184,15 @@
 				if (Math.abs(s.x - px) > R || Math.abs(s.y - py) > R) continue;
 				const k = structKey(s);
 				const prev = sandustryMP._dataSeen.get(k);
-				if (prev === undefined) { dataSeenSet(k, s.data); continue; }
-				let cur; try { cur = JSON.stringify(s.data == null ? null : s.data); } catch (e) { continue; }
+				if (prev === undefined) { dataSeenSet(k, s.data, s.filter); continue; }
+				let cur; try { cur = JSON.stringify({ data: s.data == null ? null : s.data, filter: s.filter == null ? null : s.filter }); } catch (e) { continue; }
 				if (cur !== prev) {
 					sandustryMP._dataSeen.set(k, cur);
 					sandustryMP._dataEdited.set(k, now);
-					try { net.send({ t: "act", k: "sdata", x: s.x, y: s.y, type: s.type, data: JSON.parse(cur) }); } catch (e) {}
+					try {
+						const config = JSON.parse(cur);
+						net.send({ t: "act", k: "sdata", x: s.x, y: s.y, type: s.type, data: config.data, filter: config.filter });
+					} catch (e) {}
 					log("CLIENT machine config →", k);
 				}
 			}
@@ -1456,6 +1462,27 @@
 	const CLEARANCE_FULLY_BLOCKED = 2;
 	const CLEARANCE_PARTIALLY_BLOCKED = 3;
 	const CLEARANCE_CAN_BE_REPLACED = 4;
+	function structureAcceptsPlayerFilter(structureType) {
+		try {
+			const buildingModule = sandustryMP._buildingMod;
+			const structureConfig = buildingModule && typeof buildingModule.Ic === "function" ? buildingModule.Ic(structureType) : null;
+			if (structureConfig && structureConfig.tooltipHover && structureConfig.tooltipHover.type === "filter") return true;
+		} catch (e) {}
+		return structureType === 17 || structureType === 18 || ["filterLeftMk2", "filterRightMk2", "filterWall", "filterWallMk2"].includes(structureType);
+	}
+	function normalizePlayerFilter(structureType, filter) {
+		if (!filter || typeof filter !== "object") return undefined;
+		let normalized;
+		try { normalized = JSON.parse(JSON.stringify(filter)); } catch (e) { return undefined; }
+		// Sandustry enables liquid and gas handling unconditionally for every Mk2
+		// advanced filter. Client placement is intercepted before that native default
+		// is applied, so restore it on the authoritative host configuration.
+		if (["filterLeftMk2", "filterRightMk2", "filterWallMk2"].includes(structureType)) {
+			normalized.affectsLiquid = true;
+			normalized.affectsGas = true;
+		}
+		return normalized;
+	}
 	function getNativePlacementInstruction(state, structureType, x, y, replace) {
 		const buildingModule = sandustryMP._buildingMod;
 		if (!buildingModule) return null;
@@ -1477,14 +1504,22 @@
 				const structureConfig = buildingModule.Ic(structureType);
 				if (!structureConfig || structureConfig.structureType == null) return null;
 				const clearance = buildingModule.b8(state, x, y, structureConfig, { ignorePlayer: true });
-				return { x, y, structureType: structureConfig.structureType, clearance };
+				return {
+					x,
+					y,
+					structureType: structureConfig.structureType,
+					clearance,
+					acceptsPlayerFilter: structureAcceptsPlayerFilter(structureConfig.structureType),
+				};
 			}
 			if (typeof buildingModule.K4 !== "function") return null;
 			buildingSession.start = { x, y };
 			const instructions = buildingModule.K4(state, structureType, { x, y }, { ignorePlayer: true });
 			const positions = instructions && instructions.positions;
 			if (!Array.isArray(positions)) return null;
-			return positions.find((position) => position && position.x === x && position.y === y) || positions[0] || null;
+			const instruction = positions.find((position) => position && position.x === x && position.y === y) || positions[0] || null;
+			if (instruction) instruction.acceptsPlayerFilter = structureAcceptsPlayerFilter(instruction.structureType);
+			return instruction;
 		} catch (e) {
 			log("HOST native placement validation error:", structureType, e.message);
 			return null;
@@ -1519,14 +1554,19 @@
 					if (!(sandustryMP.net.role === "client" && edited != null && performance.now() - edited < 6000)) {
 						existing.data = s.data;
 						if (SA.update) SA.update(state, existing, { propagateToWorkers: sandustryMP.net.role === "host" });
-						if (sandustryMP.net.role === "client") dataSeenSet(k, s.data); // client edit detection database
+						if (sandustryMP.net.role === "client") dataSeenSet(k, s.data, s.filter); // client edit detection database
 					}
-				} else if (sandustryMP.net.role === "client") dataSeenSet(structKey(s), existing.data);
+				}
 				if (s.filter !== undefined && JSON.stringify(existing.filter) !== JSON.stringify(s.filter)) {
-					existing.filter = JSON.parse(JSON.stringify(s.filter));
-					nativeStateChanged = true;
+					const key = structKey(s);
+					const edited = sandustryMP._dataEdited && sandustryMP._dataEdited.get(key);
+					if (!(sandustryMP.net.role === "client" && edited != null && performance.now() - edited < 6000)) {
+						existing.filter = JSON.parse(JSON.stringify(s.filter));
+						nativeStateChanged = true;
+					}
 				}
 				if (nativeStateChanged && SA.update) SA.update(state, existing, { propagateToWorkers: sandustryMP.net.role === "host" });
+				if (sandustryMP.net.role === "client") dataSeenSet(structKey(s), existing.data, existing.filter);
 				return existing;
 			}
 			// Reconstruct host-confirmed partial builds through the native partial-clearance
@@ -1553,6 +1593,15 @@
 	function removeOne(state, s) {
 		try { const SA = structNs(); if (SA) SA.removeAt(state, s.x, s.y, {}); } catch (e) { log("removeOne error:", e.message); }
 	}
+	function removePipeOne(state, pipe) {
+		try {
+			if (typeof sandustryMP._pipeZn === "function") sandustryMP._pipeZn(state, { x: pipe.x, y: pipe.y }, { x: pipe.x, y: pipe.y });
+			else removeOne(state, pipe);
+			const key = structKey(pipe);
+			if (sandustryMP._absentCount) sandustryMP._absentCount.delete(key);
+			if (sandustryMP._structApplied) sandustryMP._structApplied.delete(key);
+		} catch (e) { log("removePipeOne error:", e.message); }
+	}
 	function removeStructuresForMove(state, structuresApi, structures) {
 		for (const structure of structures) {
 			structuresApi.removeAt(state, structure.x, structure.y, { removeCells: true, skipWorkerSync: false });
@@ -1568,6 +1617,7 @@
 			// client renders confirmed structures: force=true (no collision check, no cell saving)
 			if (msg.k === "add") for (const s of msg.list) { buildOne(state, s, true); sandustryMP._structApplied.set(structKey(s), performance.now()); }
 			else if (msg.k === "rm") for (const s of msg.list) removeOne(state, s);
+			else if (msg.k === "pipeRm") for (const pipe of msg.list) removePipeOne(state, pipe);
 			else if (msg.k === "mv") { for (const s of msg.from) removeOne(state, s); for (const s of msg.to) { buildOne(state, s, true); sandustryMP._structApplied.set(structKey(s), performance.now()); } }
 		} finally { sandustryMP._applyingNet = false; }
 	}
@@ -2961,6 +3011,15 @@
 	// No event is emitted until confirmation ("recolors them red, and that's it" - TCentraL), so capture intent instead:
 	// find structures in the selected rect after LUSTRZE (getAtCell on rect cells - accuracy as
 	// game, takes shape into account) and send it via the existing act demolish channel. Host deletes, st rm confirms.
+	function isPipeRemovalSelected(state) {
+		try {
+			const selected = sandustryMP.gameApi.action && sandustryMP.gameApi.action.getSelected && sandustryMP.gameApi.action.getSelected(state);
+			if (!selected) return false;
+			// Native StructureType.Pipe is 23 in supported Sandustry builds. Named
+			// Sandkit pipe variants retain "pipe" in their registered structure ID.
+			return selected.id === 23 || String(selected.id).toLowerCase().includes("pipe");
+		} catch (e) { return false; }
+	}
 	sandustryMP._demol = (state, start, end) => {
 		try {
 			// Host and solo modes use normal demolition, but remember the rectangle for a delayed cleanup pass.
@@ -2972,22 +3031,16 @@
 				// TRYB RUR (raport TCentraL "removes pipe and blocks"): usuwanie RUR celowo zostawia
 				// structures/blocks in the rack - the finisher would take them for the stuck remnants of QUEUED and remove them.
 				// Outside pipe mode, arm the cleanup pass; the game already removes pipes correctly.
-				try {
-					const sel = sandustryMP.gameApi.action && sandustryMP.gameApi.action.getSelected && sandustryMP.gameApi.action.getSelected(state);
-					if (sel && String(sel.id).toLowerCase().indexOf("pipe") >= 0) return false;
-				} catch (e) {}
+				if (isPipeRemovalSelected(state)) return false;
 				sandustryMP._hostDemolRect = { x0: Math.floor(Math.min(start.x, end.x)), y0: Math.floor(Math.min(start.y, end.y)), x1: Math.ceil(Math.max(start.x, end.x)), y1: Math.ceil(Math.max(start.y, end.y)), t: performance.now() };
 				return false; // the game undresses normally; we'll just clean up after her
 			}
 			// pipes (Pipe): separate path in the game (Zn) - we forward rect, the host calls _pipeZn (export from patch)
-			try {
-				const sel = sandustryMP.gameApi.action && sandustryMP.gameApi.action.getSelected && sandustryMP.gameApi.action.getSelected(state);
-				if (sel && String(sel.id).toLowerCase().indexOf("pipe") >= 0) {
-					net.send({ t: "act", k: "pipeRm", x0: Math.floor(Math.min(start.x, end.x)), y0: Math.floor(Math.min(start.y, end.y)), x1: Math.ceil(Math.max(start.x, end.x)), y1: Math.ceil(Math.max(start.y, end.y)) });
-					log("CLIENT pipeRm rect");
-					return true; // skip local (host will execute, mirror + snap will confirm)
-				}
-			} catch (e) {}
+			if (isPipeRemovalSelected(state)) {
+				net.send({ t: "act", k: "pipeRm", x0: Math.floor(Math.min(start.x, end.x)), y0: Math.floor(Math.min(start.y, end.y)), x1: Math.ceil(Math.max(start.x, end.x)), y1: Math.ceil(Math.max(start.y, end.y)) });
+				log("CLIENT pipeRm rect");
+				return true; // skip local (host will execute, mirror + snap will confirm)
+			}
 			const SA = structNs(); if (!SA) { log("_demol: missing API structures"); return false; }
 			// `H(e)` returns a rectangle already expressed in cells; it divides snapped coordinates by `cellSize`.
 			// Bug 0.9.28 divided coordinates by four twice, scanning a smaller area near the origin.
@@ -3254,7 +3307,14 @@
 									structuresApi.removeAt(state, instruction.x, instruction.y, { removeCells: true, skipWorkerSync: false });
 								}
 							}
-							built = buildOne(state, { type: instruction.structureType, x: instruction.x, y: instruction.y, clearance: instruction.clearance, data: msg.data || undefined, filter: msg.filter || undefined }, false);
+							built = buildOne(state, {
+								type: instruction.structureType,
+								x: instruction.x,
+								y: instruction.y,
+								clearance: instruction.clearance,
+								data: msg.data || undefined,
+								filter: instruction.acceptsPlayerFilter ? normalizePlayerFilter(instruction.structureType, msg.filter) : undefined,
+							}, false);
 						}
 					}
 				} finally { sandustryMP._applyingNet = false; }
@@ -3457,13 +3517,16 @@
 					log("HOST: client paste -", ok + "/" + (msg.list || []).length, "structures");
 				} finally { sandustryMP._applyingNet = false; }
 			} else if (msg.k === "sdata") {
-				// machine configuration changed by the customer (filters/priorities/UI settings)
+				// Machine configuration changed by the client (filters/priorities/UI settings).
 				sandustryMP._applyingNet = true;
 				try {
 					const SA3 = structNs();
 					const ex = SA3 && SA3.getAtCell(state, msg.x, msg.y);
 					if (ex && ex.type === msg.type) {
 						ex.data = msg.data;
+						if (structureAcceptsPlayerFilter(ex.type) && msg.filter && typeof msg.filter === "object") {
+							ex.filter = normalizePlayerFilter(ex.type, msg.filter);
+						}
 						if (SA3.update) SA3.update(state, ex, { propagateToWorkers: true });
 						log("HOST: machine config from the client:", msg.type, "@", msg.x, msg.y);
 					}
@@ -3483,10 +3546,20 @@
 					}
 				} finally { sandustryMP._applyingNet = false; }
 			} else if (msg.k === "pipeRm") {
-				// Client pipe demolition calls the real game function (`Zn` exported from the demolition module patch).
+				// The host runs the native pipe demolition routine, then reports only pipes that routine actually removed.
 				sandustryMP._applyingNet = true;
 				try {
-					if (typeof sandustryMP._pipeZn === "function") { sandustryMP._pipeZn(state, { x: msg.x0, y: msg.y0 }, { x: msg.x1, y: msg.y1 }); log("HOST: client pipes dismantled within the rectangle"); }
+					if (typeof sandustryMP._pipeZn === "function") {
+						const start = { x: Math.min(msg.x0, msg.x1), y: Math.min(msg.y0, msg.y1) };
+						const end = { x: Math.max(msg.x0, msg.x1), y: Math.max(msg.y0, msg.y1) };
+						const snapGridCellSize = sandustryMP.gameApi && sandustryMP.gameApi.constants && sandustryMP.gameApi.constants.snapGridCellSize || 4;
+						const candidates = (state.store.pipes || []).filter((pipe) => pipe.x <= end.x && pipe.x + snapGridCellSize > start.x && pipe.y <= end.y && pipe.y + snapGridCellSize > start.y);
+						sandustryMP._pipeZn(state, start, end);
+						const remaining = new Set((state.store.pipes || []).map(structKey));
+						const removed = candidates.filter((pipe) => !remaining.has(structKey(pipe))).map(slimStruct);
+						if (removed.length) net.send({ t: "st", k: "pipeRm", list: removed });
+						log("HOST: client pipes removed:", removed.length);
+					}
 					else log("pipeRm ERROR: _pipeZn missing (patch 'demolish module exports' not applied?)");
 				} finally { sandustryMP._applyingNet = false; }
 			} else if (msg.k === "vac") {

@@ -4,7 +4,7 @@ SandustryMP is an experimental co-op multiplayer mod for Sandustry.
 
 **Author:** Cr0ss0vr
 
-**Current version:** v0.3.8
+**Current version:** v0.3.9
 
 The host owns the authoritative game state. Other players connect through Steam or a Direct connection, receive the host's world, and send gameplay requests back to the host for validation and execution.
 
