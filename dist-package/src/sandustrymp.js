@@ -16,7 +16,7 @@
 			window.electron && window.electron.log && window.electron.log("info", "SandustryMP:game", line);
 		} catch (e) {}
 	};
-	const VER = "v0.3.10";
+	const VER = "v0.3.11";
 	const AUTHOR = "Cr0ss0vr";
 	const CONTRIBUTORS = "";
 	const VACUUM_CAPS = [500, 1000, 1500, 2000, 2500, 3000]; // capacity table from the game code (module 6420)
@@ -2819,9 +2819,10 @@
 		sandustryMP._energyToolAim(state, toolId);
 		const now = performance.now();
 		const toolState = clientEnergyToolState(toolId);
-		// Tool handlers run at render frequency. Thirty intent pulses per second
-		// preserve sustained use without flooding the reliable action channel.
-		if (now - toolState.lastUseAt < 33) return true;
+		// Native Drill use runs at roughly 60 pulses per second. Preserve that
+		// cadence; the Laser remains bounded to the existing 30 Hz intent rate.
+		const minimumPulseInterval = toolId === "drill" ? 16 : 33;
+		if (now - toolState.lastUseAt < minimumPulseInterval) return true;
 		toolState.lastUseAt = now;
 		toolState.sequence++;
 		try { net.send({ t: "act", k: "toolDig", tool: toolId, ax: aim.x, ay: aim.y, q: toolState.sequence }); } catch (e) {}
@@ -3114,10 +3115,12 @@
 		if (!toolState) { toolState = { active: false, startedAt: 0, lastAimAt: 0, lastUseAt: 0, lastSequence: 0, aimX: 0, aimY: 0 }; states.set(toolId, toolState); }
 		return toolState;
 	}
-	function hostOwnsTool(state, toolId) {
-		const inventory = state.store.player && state.store.player.inventory;
-		const expectedId = String(toolId);
-		return Array.isArray(inventory) && inventory.some((item) => item && String(item.id != null ? item.id : item.typeId) === expectedId);
+	function hostAllowsRemoteEnergyTool(state, peer, toolId) {
+		if (!peer) return false;
+		const requiredTechnology = toolId === "drill" ? 70 : toolId === "laser" ? 106 : null;
+		// `peer.tools` is renderer visibility from a separate position packet. It can
+		// arrive behind the reliable tool action and must not reject valid use.
+		return requiredTechnology != null && state.store.player && state.store.player.tech && state.store.player.tech[requiredTechnology] === true;
 	}
 	function hostCanUseEnergyTool(state, peer) {
 		const authorization = sandustryMP.gameApi && sandustryMP.gameApi.authorization;
@@ -3148,6 +3151,13 @@
 		} catch (e) { return false; }
 	}
 	function hostDrillTarget(state, origin, angle, maxRange) {
+		const nativeDrill = sandustryMP._drillMod;
+		if (nativeDrill && typeof nativeDrill.Qk === "function") {
+			const cellIndex = nativeDrill.Qk(state, origin.x, origin.y, angle, maxRange);
+			const width = state.shared && state.shared.sim && state.shared.sim.width;
+			if (Number.isInteger(cellIndex) && cellIndex >= 0 && Number.isInteger(width) && width > 0) return { x: cellIndex % width, y: Math.floor(cellIndex / width) };
+			return null;
+		}
 		const { cellIds, width, height } = worldBuffers(state);
 		if (!cellIds || !width || !height) return null;
 		const cells = new Uint32Array(cellIds.buffer, cellIds.byteOffset, width * height);
@@ -3169,9 +3179,10 @@
 		const toolState = hostPeerToolIntentState(peer, msg.tool);
 		if (msg.q <= toolState.lastSequence) return { success: false, reason: "stale" };
 		toolState.lastSequence = msg.q;
-		if (now - toolState.lastUseAt < 20) return { success: false, reason: "rate" };
+		const minimumHostInterval = msg.tool === "drill" ? 12 : 20;
+		if (now - toolState.lastUseAt < minimumHostInterval) return { success: false, reason: "rate" };
 		toolState.lastUseAt = now;
-		if (!hostOwnsTool(state, msg.tool)) return { success: false, reason: "locked" };
+		if (!hostAllowsRemoteEnergyTool(state, peer, msg.tool)) return { success: false, reason: "locked" };
 		if (!hostCanUseEnergyTool(state, peer)) return { success: false, reason: "unauthorized" };
 		if (!Number.isFinite(peer.tx) || !Number.isFinite(peer.ty) || now - (peer.lastSeen || 0) > 1500) return { success: false, reason: "position" };
 		const origin = hostEnergyToolOrigin(state, peer, msg.tool);
@@ -3204,6 +3215,7 @@
 			if (!target || !hostConsumeEnergy(state, 1, false)) continue;
 			const velocity = { x: 100 * Math.cos(rayAngle + Math.PI), y: 100 * Math.sin(rayAngle + Math.PI) };
 			world.excavate(state, target.x, target.y, velocity, 1 + boreLevel, { fromDrill: true, useLiteralOutVelocity: true });
+			if (typeof world.redrawSurroundingCells === "function") world.redrawSurroundingCells(state, target.x, target.y, 5);
 			excavations++;
 		}
 		return excavations ? { success: true, excavations, energy: excavations } : { success: false, reason: (state.store.resources.energy || 0) > 0 ? "target" : "energy" };
@@ -3275,6 +3287,7 @@
 				toolState.aimX = msg.ax; toolState.aimY = msg.ay; toolState.lastAimAt = performance.now();
 				if (msg.tool === "drill" && !toolState.active) { toolState.active = true; toolState.startedAt = toolState.lastAimAt; }
 				const result = executeHostEnergyTool(state, peer, msg);
+				if (!result.success && (sandustryMP._energyToolRejectLogs = (sandustryMP._energyToolRejectLogs || 0) + 1) <= 40) log("HOST rejected client energy tool:", msg.tool, result.reason);
 				sendEnergyToolResult(fromId, msg, result.success, result.reason, result.success ? { x: result.target && result.target.x, y: result.target && result.target.y, energy: result.energy, excavations: result.excavations } : null);
 			} else if (msg.k === "cryoUse") {
 				executeHostCryoblaster(state, sandustryMP.peers.get(fromId), msg);

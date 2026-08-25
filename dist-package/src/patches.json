@@ -169,6 +169,17 @@
    ]
   },
   {
+    "name": "native drill raycast export (_drillMod)",
+    "file": "dist/js/bundle.js",
+    "required": true,
+    "variants": [
+      {
+        "anchor": "n.d(t,{Qk:()=>U,Ts:()=>y,it:()=>u,jw:()=>g,xA:()=>m});var a=n(38163)",
+        "patched": "n.d(t,{Qk:()=>U,Ts:()=>y,it:()=>u,jw:()=>g,xA:()=>m});window.SandustryMP&&(window.SandustryMP._drillMod=t);var a=n(38163)"
+      }
+    ]
+  },
+  {
    "name": "native drone sprite reconciliation (_syncDroneSprites)",
    "critical": true,
    "variants": [

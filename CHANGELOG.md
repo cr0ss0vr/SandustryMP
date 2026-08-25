@@ -2,6 +2,13 @@
 
 All notable changes to SandustryMP are recorded here. Dates use the ISO `YYYY-MM-DD` format.
 
+## v0.3.11 - 2026-08-25
+
+- Resolve client Drill targets through Sandustry's native raycast so damaged Stone remains the active target instead of allowing the drill to pass through to Dirt or Scoria behind it.
+- Validate remote Drill use against the shared Drill technology rather than the host inventory or lagging renderer-only equipment packets.
+- Keep native excavation and authoritative energy consumption paired on the host for every successful client Drill pulse.
+- Match the native Drill's approximately 60 Hz excavation cadence and redraw nearby terrain after each hit so hidden surroundings are revealed as they are for the host.
+
 ## v0.3.10 - 2026-08-25
 
 - Verify client-triggered story waypoints against the authoritative host objective and the client's synchronized position.
