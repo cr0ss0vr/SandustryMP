@@ -2,6 +2,10 @@
 
 All notable changes to SandustryMP are recorded here. Dates use the ISO `YYYY-MM-DD` format.
 
+## v0.2.8 - 2026-08-25
+
+- Refresh the client resource HUD as soon as the authoritative host Fluxite total changes, without requiring the player to open a menu.
+
 ## v0.2.7 - 2026-08-24
 
 - Recreated client Cryoblaster particles through the native host routine with their original launch velocity, preventing snow particles from dropping limply at the muzzle.

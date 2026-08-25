@@ -16,11 +16,12 @@
 			window.electron && window.electron.log && window.electron.log("info", "SandustryMP:game", line);
 		} catch (e) {}
 	};
-	const VER = "v0.2.7";
+	const VER = "v0.2.8";
 	const AUTHOR = "Cr0ss0vr";
 	const CONTRIBUTORS = "";
 	const VACUUM_CAPS = [500, 1000, 1500, 2000, 2500, 3000]; // capacity table from the game code (module 6420)
 	const RJ_FIRE = 11, RJ_FREEZINGICE = 12; // enuma RJ values from the current build (to createAt on the host)
+	const UI_SECTION_RESOURCES = 8; // JU.Resources in the base game's UI section enum
 	const CHUNK = 40;
 
 	const localisation = window.SandustryMPLocalisation.create(AUTHOR);
@@ -2025,7 +2026,18 @@
 		const state = sandustryMP.state;
 		if (!state) return;
 		try {
+			const previousFluxite = Number(state.store.resources && state.store.resources.fluxite);
 			if (msg.r) Object.assign(state.store.resources, msg.r);
+			const hostFluxite = Number(msg.r && msg.r.fluxite);
+			if (Number.isFinite(hostFluxite) && hostFluxite !== previousFluxite) {
+				// The resource HUD is a React overlay and does not observe direct store mutations.
+				// Opening a management menu incidentally rerenders it; request that same refresh
+				// immediately whenever the authoritative host Fluxite total changes.
+				try {
+					const ui = sandustryMP.gameApi.ui;
+					if (ui && ui.update) ui.update(state, UI_SECTION_RESOURCES);
+				} catch (e) {}
+			}
 			if (msg.pp !== undefined) state.store.productionPoints = msg.pp;
 			const sharedState = state.shared;
 			if (msg.g !== null && unwrapTypedArray(sharedState.gold)) unwrapTypedArray(sharedState.gold)[0] = msg.g;
