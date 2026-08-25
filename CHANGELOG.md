@@ -2,6 +2,20 @@
 
 All notable changes to SandustryMP are recorded here. Dates use the ISO `YYYY-MM-DD` format.
 
+## v0.3.6 - 2026-08-25
+
+- Reconcile authoritative Mining, Recon, and Hauler drone records without replacing the objects used by Sandustry's renderer.
+- Create and remove remote drone sprites through Sandustry's native sprite routines, retaining each drone type's textures and animation hooks.
+- Keep mining-drone tilt state local to the renderer so network pulses do not repeatedly reset its animation.
+- Translate drone materialisation and dissolve timestamps onto the receiving game's clock, preventing Recon drones from sticking or growing after recall.
+- Smooth client-side drone presentation between authoritative host positions so return flights no longer step, jitter, or repeatedly over-correct their native rotation.
+- Tag client-deployed Mining drones with their owner and make the host's native return routine follow that player's current synchronized position instead of returning them to the host.
+- Send the client's complete Sweeper target reservation plan to the host before spawning its drones, including targets beyond the current drone limit.
+- Keep separate native Sweeper work queues for each player so drones can reserve, collect, retarget, and finish their owner's remaining selected particles authoritatively.
+- Validate and reserve client Sweeper targets through the original game's element, authorization, matter-type, and simulation-physics routines rather than the renderer-facing API.
+- Admit bounded Sweeper plans through the host action-schema gate so reservation data reaches authoritative execution before the drone spawn messages.
+- Re-send the complete authoritative Sweeper source footprint while drones are active and briefly after completion, clearing client particles left behind when native deferred removals do not flag their chunks.
+
 ## v0.3.5 - 2026-08-25
 
 - Allow Sandustry's native client move transaction to finish instead of intercepting each destination as an unrelated placement request.

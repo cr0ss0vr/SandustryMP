@@ -169,6 +169,56 @@
    ]
   },
   {
+   "name": "native drone sprite reconciliation (_syncDroneSprites)",
+   "critical": true,
+   "variants": [
+    {
+     "anchor": "77428(e,t,n){\"use strict\";n.d(t,{V5:()=>d,kw:()=>l,r_:()=>f,vd:()=>c,zE:()=>h});",
+     "patched": "77428(e,t,n){\"use strict\";n.d(t,{V5:()=>d,kw:()=>l,r_:()=>f,vd:()=>c,zE:()=>h});window.SandustryMP&&(window.SandustryMP._syncDroneSprites=e=>{const t=e.store.drones||[],n=e.session&&e.session.rendering&&e.session.rendering.pixi&&e.session.rendering.pixi.sprites&&e.session.rendering.pixi.sprites.drones;if(!n)return;const a=new Map(t.map(e=>[String(e.id),e]));Object.keys(n).forEach(t=>{a.has(String(t))||(0,o.GA)(e,\"drones\",t)}),t.forEach(t=>{let a=n[t.id];a&&null!=a.__smpDroneType&&a.__smpDroneType!==t.type&&((0,o.GA)(e,\"drones\",t.id),a=null),a||(t.type===s.RG.Hauler?((0,r.BY)(e,t),(0,o.P9)(e,\"drones\",t.data.inventory.amount>0?\"haulerClosed\":\"hauler\",t.id,t.x,t.y)):(a=e.sandkit.graphics[t.type],(null==a?void 0:a.texture)?(0,o.P9)(e,\"drones\",null,t.id,t.x,t.y,{texture:a.texture}):(0,o.P9)(e,\"drones\",\"hauler\",t.id,t.x,t.y)),a=n[t.id]),a&&(a.__smpDroneType=t.type)})});"
+    }
+   ]
+  },
+  {
+   "name": "client-owned mining drone live return position",
+   "critical": true,
+   "variants": [
+    {
+     "anchor": "if(t.data.returningToPlayer){cd.x=e.store.player.x+e.store.player.width/2,cd.y=e.store.player.y+e.store.player.height/2;const a=cd,",
+     "patched": "if(t.data.returningToPlayer){const smpOwner=window.SandustryMP&&window.SandustryMP._droneOwnerPosition&&window.SandustryMP._droneOwnerPosition(t,e),smpPlayer=smpOwner||e.store.player;cd.x=smpOwner?smpOwner.x:smpPlayer.x+smpPlayer.width/2,cd.y=smpOwner?smpOwner.y:smpPlayer.y+smpPlayer.height/2;const a=cd,"
+    }
+   ]
+  },
+  {
+   "name": "sweeper reservation plan forwarding",
+   "critical": true,
+   "variants": [
+    {
+     "anchor": "const r=Dc.positions.filter(e=>!e.taken).slice(0,s);return r.forEach(t=>{",
+     "patched": "const r=Dc.positions.filter(e=>!e.taken).slice(0,s);window.SandustryMP&&window.SandustryMP._sweeperPlan&&window.SandustryMP._sweeperPlan(e,Dc.positions,Dc.origin,Dc.target,Dc.targetAnchor);return r.forEach(t=>{"
+    }
+   ]
+  },
+  {
+   "name": "native authoritative sweeper target reservation",
+   "critical": true,
+   "variants": [
+    {
+     "anchor": "const Dc={positions:[],positionSet:new Set,origin:null,target:null,targetAnchor:null,dropOffMode:!1,reassignDropOffMode:!1},Lc=(e,t)=>`${e},${t}`",
+     "patched": "const Dc={positions:[],positionSet:new Set,origin:null,target:null,targetAnchor:null,dropOffMode:!1,reassignDropOffMode:!1},smpReserveSweeperTargets=(e,t)=>{const a=[];for(const o of t){if(!o||!Number.isInteger(o.x)||!Number.isInteger(o.y)||o.x<0||o.y<0||o.x>=e.store.world.size.width||o.y>=e.store.world.size.height||!ie.FH.authorization.canGrab(e,o.x,o.y))continue;const t=ie.FH.elements.getElementTypeAtPos(e,o.x,o.y),s=ie.FH.elements.getConfig(t);t&&t!==D.RJ.Particle&&!1!==(null==s?void 0:s.isGrabbable)&&(null==s?void 0:s.matterType)!==D.es.Liquid&&(null==s?void 0:s.matterType)!==D.es.Gas&&(ie.FH.elements.setPhysics(e,o.x,o.y,ie.FH.constants.PHYSICS.AGGRESSIVE_SKIP),a.push({x:o.x,y:o.y,taken:!1}))}return a};window.SandustryMP&&(window.SandustryMP._reserveSweeperTargets=smpReserveSweeperTargets);const Lc=(e,t)=>`${e},${t}`"
+    }
+   ]
+  },
+  {
+   "name": "owner-specific authoritative sweeper plan activation",
+   "critical": true,
+   "variants": [
+    {
+     "anchor": "onDroneUpdate:(e,t,n)=>{var a;if(t.type!==zc)return!1;const o=(null===dd&&(dd=ie.FH.config.getLegacy()),dd);",
+     "patched": "onDroneUpdate:(e,t,n)=>{var a;if(t.type!==zc)return!1;window.SandustryMP&&window.SandustryMP._activateSweeperPlan&&window.SandustryMP._activateSweeperPlan(t,Dc);const o=(null===dd&&(dd=ie.FH.config.getLegacy()),dd);"
+    }
+   ]
+  },
+  {
    "name": "laser client aim hook (_energyToolAim)",
    "critical": false,
    "variants": [

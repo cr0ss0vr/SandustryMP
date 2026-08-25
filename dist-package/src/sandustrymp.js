@@ -16,7 +16,7 @@
 			window.electron && window.electron.log && window.electron.log("info", "SandustryMP:game", line);
 		} catch (e) {}
 	};
-	const VER = "v0.3.5";
+	const VER = "v0.3.6";
 	const AUTHOR = "Cr0ss0vr";
 	const CONTRIBUTORS = "";
 	const VACUUM_CAPS = [500, 1000, 1500, 2000, 2500, 3000]; // capacity table from the game code (module 6420)
@@ -1598,7 +1598,7 @@
 				s: (state.store.structures || []).map(slimStruct),
 				p: (state.store.pipes || []).map(slimStruct),
 				wi: state.store.worldItems || [],
-				dr: state.store.drones || [],
+				dr: (state.store.drones || []).map(slimDrone),
 			});
 			const packed = await deflate(new TextEncoder().encode(payload));
 			net.send({ t: "snap", d: encodeBase64(packed) });
@@ -2164,6 +2164,13 @@
 	}
 
 	const slimProj = (p) => ({ x: p.x, y: p.y, type: p.type });
+	const slimDrone = (drone) => {
+		const copy = Object.assign({}, drone);
+		// prevX belongs to the renderer. Sending the host's value repeatedly makes
+		// the mining-drone tilt jump backwards whenever an entity pulse arrives.
+		delete copy.prevX;
+		return copy;
+	};
 	function sendEntitiesIfDue(state) {
 		const now = performance.now();
 		if (now - sandustryMP._lastEnt < 100) return;
@@ -2171,18 +2178,85 @@
 		try {
 			net.send({
 				t: "ent",
+				tm: state.store.meta && state.store.meta.time,
 				pr: (state.store.projectiles || []).map(slimProj),
-				dr: state.store.drones || [],
+				dr: (state.store.drones || []).map(slimDrone),
 				cr: state.store.creatures || {},
 			});
 		} catch (e) {}
+	}
+	function translateDroneAnimationTimes(state, incomingDrone, hostTime) {
+		if (!incomingDrone || !incomingDrone.data || !Number.isFinite(hostTime)) return incomingDrone;
+		const localTime = state.store.meta && state.store.meta.time;
+		if (!Number.isFinite(localTime)) return incomingDrone;
+		const data = Object.assign({}, incomingDrone.data);
+		for (const field of ["materializeStart", "dissolveStart"]) {
+			if (!Number.isFinite(data[field])) continue;
+			const elapsedOnHost = Math.max(0, hostTime - data[field]);
+			data[field] = localTime - elapsedOnHost;
+		}
+		return Object.assign({}, incomingDrone, { data });
+	}
+	function reconcileDrones(state, incomingDrones, hostTime) {
+		const currentDrones = state.store.drones || (state.store.drones = []);
+		const currentById = new Map(currentDrones.map((drone) => [String(drone.id), drone]));
+		const reconciled = [];
+		for (const wireDrone of incomingDrones) {
+			const incoming = translateDroneAnimationTimes(state, wireDrone, hostTime);
+			if (!incoming || incoming.id == null) continue;
+			const existing = currentById.get(String(incoming.id));
+			if (!existing) {
+				incoming._smpTargetX = incoming.x;
+				incoming._smpTargetY = incoming.y;
+				reconciled.push(incoming);
+				continue;
+			}
+			const renderedX = existing.x;
+			const renderedY = existing.y;
+			const rendererPreviousX = existing.prevX;
+			Object.assign(existing, incoming);
+			existing._smpTargetX = incoming.x;
+			existing._smpTargetY = incoming.y;
+			existing.x = renderedX;
+			existing.y = renderedY;
+			if (rendererPreviousX != null) existing.prevX = rendererPreviousX;
+			else delete existing.prevX;
+			reconciled.push(existing);
+		}
+		state.store.drones = reconciled;
+		const syncDroneSprites = sandustryMP._syncDroneSprites;
+		if (typeof syncDroneSprites === "function") syncDroneSprites(state);
+	}
+	function updateClientDronePresentation(state, now) {
+		if (!isClientSync() || !sandustryMP.wsx.paused) return;
+		const previousFrame = sandustryMP._lastDronePresentationFrame;
+		sandustryMP._lastDronePresentationFrame = now;
+		if (!Number.isFinite(previousFrame)) return;
+		const elapsed = Math.min(100, Math.max(0, now - previousFrame));
+		const blend = 1 - Math.exp(-elapsed / 45);
+		for (const drone of state.store.drones || []) {
+			if (!Number.isFinite(drone._smpTargetX) || !Number.isFinite(drone._smpTargetY)) continue;
+			const distanceX = drone._smpTargetX - drone.x;
+			const distanceY = drone._smpTargetY - drone.y;
+			// Genuine teleports should not visibly cross the world. Ordinary flight
+			// converges smoothly while remaining bounded by the host's latest position.
+			if (Math.hypot(distanceX, distanceY) > 512) {
+				drone.x = drone._smpTargetX;
+				drone.y = drone._smpTargetY;
+				continue;
+			}
+			drone.x += distanceX * blend;
+			drone.y += distanceY * blend;
+			if (Math.abs(distanceX) < 0.05) drone.x = drone._smpTargetX;
+			if (Math.abs(distanceY) < 0.05) drone.y = drone._smpTargetY;
+		}
 	}
 	function applyEntities(msg) {
 		const state = sandustryMP.state;
 		if (!state) return;
 		try {
 			sandustryMP.remoteProjectiles = msg.pr || []; // Render as ghosts; never add them to the store or simulate them twice.
-			if (msg.dr) state.store.drones = msg.dr;
+			if (Array.isArray(msg.dr)) reconcileDrones(state, msg.dr, msg.tm);
 			if (msg.cr) state.store.creatures = msg.cr;
 		} catch (e) {}
 	}
@@ -2729,6 +2803,93 @@
 		if (!isClientSync() || !sandustryMP.wsx.paused || sandustryMP._applyingNet) return;
 		try { net.send({ t: "act", k: "drone", d: drone }); if ((sandustryMP._drDiag = (sandustryMP._drDiag || 0) + 1) <= 20) { let _dd = ""; try { _dd = JSON.stringify(drone && drone.data).slice(0, 300); } catch (e) {} log("CLIENT forward drone:", drone && drone.type, "@", drone && drone.x, drone && drone.y, "data=", _dd); } } catch (e) {}
 	};
+	sandustryMP._sweeperPlans = new Map();
+	sandustryMP._activeSweeperPlanOwner = null;
+	function sweeperPlanOwner(drone) { return drone && drone._smpOwnerId ? String(drone._smpOwnerId) : "__host"; }
+	function storeActiveSweeperPlan(nativePlan) {
+		const owner = sandustryMP._activeSweeperPlanOwner;
+		if (!owner || !nativePlan) return;
+		const storedPlan = sandustryMP._sweeperPlans.get(owner) || {};
+		Object.assign(storedPlan, {
+			positions: nativePlan.positions,
+			positionSet: nativePlan.positionSet,
+			origin: nativePlan.origin,
+			target: nativePlan.target,
+			targetAnchor: nativePlan.targetAnchor,
+			dropOffMode: nativePlan.dropOffMode,
+			reassignDropOffMode: nativePlan.reassignDropOffMode,
+		});
+		sandustryMP._sweeperPlans.set(owner, storedPlan);
+	}
+	sandustryMP._activateSweeperPlan = (drone, nativePlan) => {
+		if (sandustryMP.net.role !== "host" || !drone || !nativePlan) return;
+		const owner = sweeperPlanOwner(drone);
+		if (sandustryMP._activeSweeperPlanOwner === owner) return;
+		storeActiveSweeperPlan(nativePlan);
+		const plan = sandustryMP._sweeperPlans.get(owner);
+		if (!plan) return;
+		nativePlan.positions = plan.positions;
+		nativePlan.positionSet = plan.positionSet;
+		nativePlan.origin = plan.origin;
+		nativePlan.target = plan.target;
+		nativePlan.targetAnchor = plan.targetAnchor;
+		nativePlan.dropOffMode = plan.dropOffMode;
+		nativePlan.reassignDropOffMode = plan.reassignDropOffMode;
+		sandustryMP._activeSweeperPlanOwner = owner;
+	};
+	function registerSweeperPlan(ownerId, positions, origin, target, targetAnchor) {
+		const owner = ownerId ? String(ownerId) : "__host";
+		const reservedPositions = positions.map((position) => ({ x: position.x, y: position.y, taken: position.taken === true }));
+		sandustryMP._sweeperPlans.set(owner, {
+			positions: reservedPositions,
+			allPositions: reservedPositions.map((position) => ({ x: position.x, y: position.y })),
+			positionSet: new Set(reservedPositions.map((position) => position.x + "," + position.y)),
+			origin: origin ? { x: origin.x, y: origin.y } : null,
+			target: target ? JSON.parse(JSON.stringify(target)) : null,
+			targetAnchor: targetAnchor ? { x: targetAnchor.x, y: targetAnchor.y } : (target ? { x: target.x, y: target.y } : null),
+			dropOffMode: false,
+			reassignDropOffMode: false,
+			lastDirtyAt: 0,
+			completedAt: 0,
+		});
+		if (sandustryMP._activeSweeperPlanOwner === owner) sandustryMP._activeSweeperPlanOwner = null;
+	}
+	sandustryMP._sweeperPlan = (state, positions, origin, target, targetAnchor) => {
+		if (!Array.isArray(positions) || !positions.length) return;
+		if (isClientSync()) {
+			try { net.send({ t: "act", k: "sweeperPlan", positions, origin, target, targetAnchor }); } catch (e) {}
+			return;
+		}
+		if (sandustryMP.net.role === "host") registerSweeperPlan(null, positions, origin, target, targetAnchor);
+	};
+	function refreshAuthoritativeSweeperChunks(state, now) {
+		if (sandustryMP.net.role !== "host" || !sandustryMP._sweeperPlans.size) return;
+		const activeOwners = new Set();
+		for (const drone of state.store.drones || []) if (drone && drone.type === "sweeper") activeOwners.add(sweeperPlanOwner(drone));
+		for (const [owner, plan] of sandustryMP._sweeperPlans) {
+			const active = activeOwners.has(owner);
+			if (active) plan.completedAt = 0;
+			else if (!plan.completedAt) plan.completedAt = now;
+			if (now - (plan.lastDirtyAt || 0) >= 250) {
+				plan.lastDirtyAt = now;
+				for (const position of plan.allPositions || plan.positions || []) markCellDirty(state, position.x, position.y);
+			}
+			if (!active && now - plan.completedAt > 2000) {
+				sandustryMP._sweeperPlans.delete(owner);
+				if (sandustryMP._activeSweeperPlanOwner === owner) sandustryMP._activeSweeperPlanOwner = null;
+			}
+		}
+	}
+	sandustryMP._droneOwnerPosition = (drone, state) => {
+		if (!drone || !drone._smpOwnerId || sandustryMP.net.role !== "host") return null;
+		const owner = sandustryMP.peers.get(drone._smpOwnerId);
+		if (!owner || !Number.isFinite(owner.tx) || !Number.isFinite(owner.ty)) return null;
+		const player = state && state.store && state.store.player;
+		return {
+			x: owner.tx + (player && Number.isFinite(player.width) ? player.width / 2 : 0),
+			y: owner.ty + (player && Number.isFinite(player.height) ? player.height / 2 : 0),
+		};
+	};
 	// _proj (patch bundle on projectiles.push): client fires weapon → local missile (sim in pause = dead,
 	// explosion doesn't work). Forwardujemy missile to host; the host uploads it to store.projectiles → its sim
 	// simulates flight+explosion+dmg authoritatively, the result returns via a mirror/entity stream. (rocket/fusil)
@@ -2844,7 +3005,7 @@
 		} catch (e) { return false; }
 	};
 
-	const HOST_ACTION_KINDS = new Set(["dig", "toolAim", "toolDig", "toolStop", "cryoUse", "place", "demolish", "upg", "tech", "tier", "story", "collect", "sig", "sbtn", "paste", "sdata", "aug", "pipeRm", "vac", "grabH", "drone", "proj", "move", "pickup", "grabPick", "grabPlace", "fireB", "shakeB", "volcB", "caulkB", "caulkRmB", "cryoB"]);
+	const HOST_ACTION_KINDS = new Set(["dig", "toolAim", "toolDig", "toolStop", "cryoUse", "place", "demolish", "upg", "tech", "tier", "story", "collect", "sig", "sbtn", "paste", "sdata", "aug", "pipeRm", "vac", "grabH", "drone", "sweeperPlan", "proj", "move", "pickup", "grabPick", "grabPlace", "fireB", "shakeB", "volcB", "caulkB", "caulkRmB", "cryoB"]);
 	function finiteCoordinate(value) { return Number.isFinite(value) && Math.abs(value) <= 1000000; }
 	function validCoordinatePair(x, y) { return finiteCoordinate(x) && finiteCoordinate(y); }
 	function validCellBatch(cells, maxCells) {
@@ -2870,6 +3031,13 @@
 			if (!rect || ![rect.x0, rect.y0, rect.x1, rect.y1].every(finiteCoordinate) || rect.x1 < rect.x0 || rect.y1 < rect.y0 || (rect.x1 - rect.x0 + 1) * (rect.y1 - rect.y0 + 1) > 40000) return false;
 		}
 		if (["fireB", "shakeB", "volcB", "caulkB", "caulkRmB", "cryoB"].includes(msg.k) && !validCellBatch(msg.c, 1000)) return false;
+		if (msg.k === "sweeperPlan") {
+			if (!Array.isArray(msg.positions) || !msg.positions.length || msg.positions.length > 4096) return false;
+			for (const position of msg.positions) if (!position || !Number.isInteger(position.x) || !Number.isInteger(position.y) || !validCoordinatePair(position.x, position.y)) return false;
+			if (!msg.origin || !validCoordinatePair(msg.origin.x, msg.origin.y)) return false;
+			if (!msg.target || !validCoordinatePair(msg.target.x, msg.target.y) || !Number.isFinite(msg.target.radius) || msg.target.radius < 0 || msg.target.radius > 100000) return false;
+			if (msg.targetAnchor != null && (!validCoordinatePair(msg.targetAnchor.x, msg.targetAnchor.y))) return false;
+		}
 		if (["paste", "move"].includes(msg.k)) {
 			const count = msg.k === "paste" ? (Array.isArray(msg.list) ? msg.list.length : -1) : (Array.isArray(msg.from) && Array.isArray(msg.to) ? msg.from.length + msg.to.length : -1);
 			if (count < 0 || count > 1024) return false;
@@ -3326,6 +3494,17 @@
 				// the client has deployed the drone → add authoritatively to the host's store.drones (its sim will handle it)
 				const d = msg.d;
 				if (d && d.id != null) {
+					d._smpOwnerId = fromId;
+					if (d.type === "sweeper") {
+						const plan = sandustryMP._sweeperPlans.get(String(fromId));
+						const cellSize = sandustryMP.gameApi && sandustryMP.gameApi.constants && sandustryMP.gameApi.constants.cellSize || 4;
+						const origin = d.data && d.data.origin;
+						if (plan && origin) {
+							const originX = Math.floor(origin.x / cellSize), originY = Math.floor(origin.y / cellSize);
+							const reserved = plan.positions.find((position) => position.x === originX && position.y === originY);
+							if (reserved) reserved.taken = true;
+						}
+					}
 					const arr = state.store.drones || (state.store.drones = []);
 					// Client and host have independent `nextId` counters; assign a free ID instead of silently dropping collisions.
 					if (arr.some((x) => x && x.id === d.id)) {
@@ -3333,7 +3512,21 @@
 						d.id = mx + 1;
 					}
 					arr.push(d);
+					if (typeof sandustryMP._syncDroneSprites === "function") sandustryMP._syncDroneSprites(state);
 					if ((sandustryMP._drHDiag = (sandustryMP._drHDiag || 0) + 1) <= 20) log("HOST: client drone added", d.type, "@", d.x, d.y, "id=" + d.id, "(drones=" + arr.length + ")");
+				}
+			} else if (msg.k === "sweeperPlan") {
+				const reserveSweeperTargets = sandustryMP._reserveSweeperTargets;
+				if (typeof reserveSweeperTargets !== "function") {
+					log("HOST: rejecting Sweeper plan because the native reservation helper is unavailable");
+					return;
+				}
+				let validPositions = [];
+				try { validPositions = reserveSweeperTargets(state, Array.isArray(msg.positions) ? msg.positions.slice(0, 4096) : []); }
+				catch (e) { log("HOST: native Sweeper plan reservation failed:", e.message); }
+				if (validPositions.length) {
+					registerSweeperPlan(fromId, validPositions, msg.origin, msg.target, msg.targetAnchor);
+					log("HOST: reserved client Sweeper targets:", validPositions.length, "for", fromId);
 				}
 			} else if (msg.k === "proj") {
 				// client fired the gun → add a missile to the host's store.projectiles → his sim simulates flight + explosion
@@ -4159,6 +4352,9 @@
 	// Hook per-frame (patch w bundle.js)
 	// ------------------------------------------------------------------
 	sandustryMP._frame = (state, gameApi) => {
+		const frameNow = performance.now();
+		updateClientDronePresentation(state, frameNow);
+		refreshAuthoritativeSweeperChunks(state, frameNow);
 		if (sandustryMP.net.role === "host") sandustryMP.det.hostEpoch++;
 		if (!sandustryMP.state) {
 			sandustryMP.state = state;
