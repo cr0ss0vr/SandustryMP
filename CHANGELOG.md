@@ -2,6 +2,11 @@
 
 All notable changes to SandustryMP are recorded here. Dates use the ISO `YYYY-MM-DD` format.
 
+## v0.3.7 - 2026-08-25
+
+- Drive held client grabber requests from the render frame instead of Sandustry's slower native collection pulse, allowing another verified pickup immediately after each host response.
+- Remove the host's silent 30 ms grab-request drop while retaining one bounded client request in flight and all native restricted-zone, capacity, liquid, type-lock, and spatial-slot validation.
+
 ## v0.3.6 - 2026-08-25
 
 - Reconcile authoritative Mining, Recon, and Hauler drone records without replacing the objects used by Sandustry's renderer.

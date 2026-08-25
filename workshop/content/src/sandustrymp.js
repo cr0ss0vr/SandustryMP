@@ -16,7 +16,7 @@
 			window.electron && window.electron.log && window.electron.log("info", "SandustryMP:game", line);
 		} catch (e) {}
 	};
-	const VER = "v0.3.6";
+	const VER = "v0.3.7";
 	const AUTHOR = "Cr0ss0vr";
 	const CONTRIBUTORS = "";
 	const VACUUM_CAPS = [500, 1000, 1500, 2000, 2500, 3000]; // capacity table from the game code (module 6420)
@@ -751,6 +751,8 @@
 		sandustryMP._placementSeq = 0;
 		sandustryMP._grabPending = null;
 		sandustryMP._grabRequestSequence = 0;
+		sandustryMP._grabTool = null;
+		sandustryMP._lastNativeGrabHookAt = 0;
 		sandustryMP._wasSaving = false;
 		resetDecisionClockSession();
 	}
@@ -2403,7 +2405,7 @@
 		}
 		return offsets;
 	}
-	sandustryMP._grab = (state, tool) => {
+	function sendClientGrabRequest(state, tool) {
 		try {
 			if (!isClientSync() || !sandustryMP.wsx.paused) return false; // host/offline or client outside the host world
 			const B = tool && tool.data && tool.data.matrix;
@@ -2415,34 +2417,36 @@
 			const ast = state.session && state.session.action && state.session.action.state;
 			if (!ast || !ast[2]) return false; // no action → let z() do hover (no download)
 			const now = performance.now();
-			if (now - (sandustryMP._lastGrabH || 0) > 33) {
-				const pendingGrab = sandustryMP._grabPending;
-				if (pendingGrab && now - pendingGrab.time < 1500) return true;
-				sandustryMP._grabPending = null;
-				sandustryMP._lastGrabH = now;
-				const m = state.session && state.session.input && state.session.input.mouse;
-				const cp = m && m.cellPosition;
-				if (cp && cp.x >= 0 && cp.y >= 0) {
-					// `matrix` is allocated to the maximum upgraded capacity; `data.size` is the
-					// currently selected area. Counting the entire allocation made a selected 5x5
-					// grabber harvest a 7x7 area on the host.
-					const grabberSize = tankState.width;
-					const selectedCellCount = grabberSize * grabberSize;
-					const freeSlots = [];
-					for (let i = 2; i < Math.min(B.length, selectedCellCount + 2); i++) if (B[i] === 0) freeSlots.push(i - 2);
-					const free = freeSlots.length;
-					if (free > 0) {
-						sandustryMP._grabTool = tool; // remember to fill the tank after the host responds
-						const requestSequence = (sandustryMP._grabRequestSequence = (sandustryMP._grabRequestSequence || 0) + 1);
-						sandustryMP._grabPending = { q: requestSequence, time: now };
-						try { net.send({ t: "act", k: "grabH", q: requestSequence, x: cp.x | 0, y: cp.y | 0, f: free, fs: freeSlots, s: grabberSize, lt: B[0] || 0 }); }
-						catch (e) { sandustryMP._grabPending = null; }
-						if ((sandustryMP._grabHDiag = (sandustryMP._grabHDiag || 0) + 1) <= 40) log("CLIENT grabH forward @", cp.x | 0, cp.y | 0, "size=" + grabberSize, "free=" + free, "lock=" + (B[0] || 0));
-					}
+			const pendingGrab = sandustryMP._grabPending;
+			if (pendingGrab && now - pendingGrab.time < 1500) return true;
+			sandustryMP._grabPending = null;
+			const m = state.session && state.session.input && state.session.input.mouse;
+			const cp = m && m.cellPosition;
+			if (cp && cp.x >= 0 && cp.y >= 0) {
+				// `matrix` is allocated to the maximum upgraded capacity; `data.size` is the
+				// currently selected area. Counting the entire allocation made a selected 5x5
+				// grabber harvest a 7x7 area on the host.
+				const grabberSize = tankState.width;
+				const selectedCellCount = grabberSize * grabberSize;
+				const freeSlots = [];
+				for (let i = 2; i < Math.min(B.length, selectedCellCount + 2); i++) if (B[i] === 0) freeSlots.push(i - 2);
+				const free = freeSlots.length;
+				if (free > 0) {
+					sandustryMP._grabTool = tool; // remember to fill the tank after the host responds
+					const requestSequence = (sandustryMP._grabRequestSequence = (sandustryMP._grabRequestSequence || 0) + 1);
+					sandustryMP._grabPending = { q: requestSequence, time: now };
+					try { net.send({ t: "act", k: "grabH", q: requestSequence, x: cp.x | 0, y: cp.y | 0, f: free, fs: freeSlots, s: grabberSize, lt: B[0] || 0 }); }
+					catch (e) { sandustryMP._grabPending = null; }
+					if ((sandustryMP._grabHDiag = (sandustryMP._grabHDiag || 0) + 1) <= 40) log("CLIENT grabH forward @", cp.x | 0, cp.y | 0, "size=" + grabberSize, "free=" + free, "lock=" + (B[0] || 0));
 				}
 			}
 			return true; // skip local collection (host will do it authoritatively)
 		} catch (e) { return false; }
+	}
+	sandustryMP._grab = (state, tool) => {
+		sandustryMP._grabTool = tool;
+		sandustryMP._lastNativeGrabHookAt = performance.now();
+		return sendClientGrabRequest(state, tool);
 	};
 	// Merged particles expose the technical Particle type through elementType.
 	// Native grabber behavior follows linkedElementIndex to the underlying
@@ -2467,11 +2471,6 @@
 	function hostHarvestGrab(msg, fromId) {
 		const state = sandustryMP.state;
 		if (!state || !sandustryMP.gameApi) return;
-		// rate-limit per player (the client limits itself to 100ms, but the host cannot trust the client)
-		if (!sandustryMP._grabHLast) sandustryMP._grabHLast = new Map();
-		const tNow = performance.now();
-		if (tNow - (sandustryMP._grabHLast.get(fromId) || 0) < 30) return;
-		sandustryMP._grabHLast.set(fromId, tNow);
 		const el = sandustryMP.gameApi.elements || {};
 		const getInfo = el.getInfoAtPos;
 		const removeAt = el.removeAt;
@@ -4353,6 +4352,7 @@
 	// ------------------------------------------------------------------
 	sandustryMP._frame = (state, gameApi) => {
 		const frameNow = performance.now();
+		if (isClientSync() && sandustryMP._grabTool && frameNow - (sandustryMP._lastNativeGrabHookAt || 0) < 500) sendClientGrabRequest(state, sandustryMP._grabTool);
 		updateClientDronePresentation(state, frameNow);
 		refreshAuthoritativeSweeperChunks(state, frameNow);
 		if (sandustryMP.net.role === "host") sandustryMP.det.hostEpoch++;
