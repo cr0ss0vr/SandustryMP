@@ -2,6 +2,10 @@
 
 All notable changes to SandustryMP are recorded here. Dates use the ISO `YYYY-MM-DD` format.
 
+## v0.2.9 - 2026-08-25
+
+- Restore player movement when another player closes the shared artefact choice window, matching the base game's native close cleanup.
+
 ## v0.2.8 - 2026-08-25
 
 - Refresh the client resource HUD as soon as the authoritative host Fluxite total changes, without requiring the player to open a menu.

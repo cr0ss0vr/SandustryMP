@@ -16,7 +16,7 @@
 			window.electron && window.electron.log && window.electron.log("info", "SandustryMP:game", line);
 		} catch (e) {}
 	};
-	const VER = "v0.2.8";
+	const VER = "v0.2.9";
 	const AUTHOR = "Cr0ss0vr";
 	const CONTRIBUTORS = "";
 	const VACUUM_CAPS = [500, 1000, 1500, 2000, 2500, 3000]; // capacity table from the game code (module 6420)
@@ -1996,6 +1996,20 @@
 		} catch (e) { return null; }
 	}
 	function fpCounters(state) { const processingCounters = fpArr(state); return processingCounters ? Array.from(processingCounters) : null; }
+	function finishRemoteAugmentChoiceClosure(state, wasPending, augments) {
+		if (!wasPending || !augments || augments.pendingChoice !== false) return;
+		// The native augment close routine restores this multiplier. A synchronized
+		// pendingChoice mutation closes React's overlay without running that routine.
+		try {
+			const playerApi = sandustryMP.gameApi.player;
+			if (playerApi && playerApi.setMovementSpeedMultiplier) playerApi.setMovementSpeedMultiplier(state, 1);
+		} catch (e) {}
+		try {
+			const overlays = sandustryMP.gameApi.ui && sandustryMP.gameApi.ui.overlays;
+			if (overlays && overlays.update) overlays.update(state, "global");
+		} catch (e) {}
+		log("SYNC: remote artefact choice closed; restored local player movement");
+	}
 	function updateClientConveyorAnimations(state, hostAnimationIndexes) {
 		if (!state || sandustryMP.net.role !== "client" || !sandustryMP._baseWorldReady) return;
 		const animationIndexes = unwrapTypedArray(state.shared && state.shared.conveyorBeltsAnimationIndex);
@@ -2050,12 +2064,14 @@
 				// `mods.grabberSizeScroll` was overwritten with host state every second. Preserve local preferences.
 				// we keep it in the override (expandable list if the game kept more UI settings here).
 				const prevMods = state.store.mods || {};
+				const augmentChoiceWasPending = !!(prevMods.augments && prevMods.augments.pendingChoice);
 				state.store.mods = msg.st;
 				for (const k of ["grabberSizeScroll"]) if (prevMods[k] !== undefined) state.store.mods[k] = prevMods[k];
 				// Augments (TCentraL: client trapped in selection screen): a fresh local client selection
 				// (act:aug en route) cannot be overwritten by stream - 5s protection window; outside of it, the host rules.
 				if (sandustryMP._augEditT && performance.now() - sandustryMP._augEditT < 5000 && prevMods.augments !== undefined) state.store.mods.augments = prevMods.augments;
 				try { sandustryMP._augLast = JSON.stringify(state.store.mods.augments || null); } catch (e) {}
+				finishRemoteAugmentChoiceClosure(state, augmentChoiceWasPending, state.store.mods.augments);
 			}
 			if (msg.gl) state.store.gloom = msg.gl;
 			if (msg.fp) { const processingCounters = fpArr(state); if (processingCounters) { const sourceCounters = msg.fp; for (let index = 0; index < Math.min(processingCounters.length, sourceCounters.length); index++) { try { Atomics.store(processingCounters, index, sourceCounters[index]); } catch (e) { processingCounters[index] = sourceCounters[index]; } } } }
@@ -3227,7 +3243,9 @@
 				try {
 					if (msg.a && typeof msg.a === "object") {
 						state.store.mods = state.store.mods || {};
+						const augmentChoiceWasPending = !!(state.store.mods.augments && state.store.mods.augments.pendingChoice);
 						state.store.mods.augments = Object.assign(state.store.mods.augments || {}, msg.a);
+						finishRemoteAugmentChoiceClosure(state, augmentChoiceWasPending, state.store.mods.augments);
 						try { sandustryMP.gameApi.ui && sandustryMP.gameApi.ui.overlays && sandustryMP.gameApi.ui.overlays.update && sandustryMP.gameApi.ui.overlays.update(state, "global"); } catch (e) {}
 						log("HOST: client augments applied (select from augment screen)");
 					}
