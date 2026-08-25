@@ -16,7 +16,7 @@
 			window.electron && window.electron.log && window.electron.log("info", "SandustryMP:game", line);
 		} catch (e) {}
 	};
-	const VER = "v0.2.10";
+	const VER = "v0.2.11";
 	const AUTHOR = "Cr0ss0vr";
 	const CONTRIBUTORS = "";
 	const VACUUM_CAPS = [500, 1000, 1500, 2000, 2500, 3000]; // capacity table from the game code (module 6420)
@@ -3920,8 +3920,24 @@
 			return pp;
 		} catch (e) { log("ensurePeerPuppet error:", e.message); return null; }
 	}
-	function removePeerPuppet(id) { const pp = sandustryMP.peerPuppets.get(id); if (!pp) return; try { pp.parent.removeChild(pp.puppet); } catch (e) {} sandustryMP.peerPuppets.delete(id); }
-	function removeAllPeerPuppets() { for (const id of [...sandustryMP.peerPuppets.keys()]) removePeerPuppet(id); }
+	function clearGhostCanvas() {
+		try {
+			const ghostCanvas = sandustryMP._ghostCanvas;
+			const context = ghostCanvas && ghostCanvas.getContext("2d");
+			if (context) context.clearRect(0, 0, ghostCanvas.width, ghostCanvas.height);
+		} catch (e) {}
+	}
+	function removePeerPuppet(id) {
+		const peerPuppet = sandustryMP.peerPuppets.get(id);
+		if (peerPuppet) {
+			try { peerPuppet.parent.removeChild(peerPuppet.puppet); } catch (e) {}
+			sandustryMP.peerPuppets.delete(id);
+		}
+		// Name labels and off-screen indicators are painted separately on this canvas.
+		// Clear it immediately even when no PIXI puppet existed or the render loop is paused.
+		clearGhostCanvas();
+	}
+	function removeAllPeerPuppets() { for (const id of [...sandustryMP.peerPuppets.keys()]) removePeerPuppet(id); clearGhostCanvas(); }
 	function worldToScreen(state, wx, wy) {
 		try { const pos = sandustryMP.gameApi && sandustryMP.gameApi.rendering && sandustryMP.gameApi.rendering.getDrawPos && sandustryMP.gameApi.rendering.getDrawPos(state, wx, wy); if (pos && typeof pos.x === "number") return pos; } catch (e) {}
 		const cam = state.session && state.session.camera;
@@ -3930,7 +3946,7 @@
 	function peerProjectileCount(id, p) { return sandustryMP.net.role === "client" ? (sandustryMP.remoteProjectiles || []).length : (p.projectiles || []).length; }
 
 	function drawGhosts(state) {
-		if (!sandustryMP.peers.size) { if (sandustryMP.peerPuppets.size) removeAllPeerPuppets(); return; }
+		if (!sandustryMP.peers.size) { if (sandustryMP.peerPuppets.size) removeAllPeerPuppets(); else clearGhostCanvas(); return; }
 		const gc = ensureGhostCanvas();
 		const ctx = gc && gc.getContext("2d");
 		if (ctx) ctx.clearRect(0, 0, gc.width, gc.height);

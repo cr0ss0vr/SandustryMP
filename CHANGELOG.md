@@ -2,6 +2,10 @@
 
 All notable changes to SandustryMP are recorded here. Dates use the ISO `YYYY-MM-DD` format.
 
+## v0.2.11 - 2026-08-25
+
+- Clear disconnected players' name labels and off-screen indicators immediately, including when the last client leaves or the host render loop is paused.
+
 ## v0.2.10 - 2026-08-25
 
 - Validate every client grabber target through the host's native restricted-zone authorization before removing an element.
