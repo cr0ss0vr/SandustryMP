@@ -2,6 +2,11 @@
 
 All notable changes to SandustryMP are recorded here. Dates use the ISO `YYYY-MM-DD` format.
 
+## v0.3.4 - 2026-08-25
+
+- Remove mushrooms, long grass, crystals, and other attached foliage on clients when their supporting terrain is removed by the host.
+- Reuse Sandustry's native foliage cleanup without replaying unrelated terrain-destruction effects on clients.
+
 ## v0.3.3 - 2026-08-25
 
 - Synchronize each player's hover state and reproduce the native hover particle cloud for remote players.

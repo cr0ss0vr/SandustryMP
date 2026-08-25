@@ -137,6 +137,17 @@
    ]
   },
   {
+    "name": "native mirrored terrain foliage cleanup (_removeFoliageAt)",
+    "file": "dist/js/bundle.js",
+    "required": true,
+    "variants": [
+      {
+        "anchor": "},ni=e=>{ie.FH.misc.register(e,Qr),ie.FH.events.on(e,\"terrain:destroyed\",(e,t)=>{((e,t)=>{const{x:n,y:a}=t,o=`${n},${a-1}`,s=Vr.foliagePositions.get(o);if(s){s.sprite&&s.sprite.destroy(),Vr.foliagePositions.delete(o);const t=Vr.clusters.get(s.clusterId);t&&(t.foliageCount--,t.foliageCount<=0&&(ie.FH.world.fadeLightSourceAt(e,t.lightX,t.lightY,15e3),Vr.clusters.delete(s.clusterId))),ti(e)}})(e,t)}),",
+        "patched": "},removeFoliage=(e,t)=>{const{x:n,y:a}=t,o=`${n},${a-1}`,s=Vr.foliagePositions.get(o);if(s){s.sprite&&s.sprite.destroy(),Vr.foliagePositions.delete(o);const t=Vr.clusters.get(s.clusterId);t&&(t.foliageCount--,t.foliageCount<=0&&(ie.FH.world.fadeLightSourceAt(e,t.lightX,t.lightY,15e3),Vr.clusters.delete(s.clusterId))),ti(e)}},smpRemoveFoliage=(window.SandustryMP&&(window.SandustryMP._removeFoliageAt=(e,t,n)=>removeFoliage(e,{x:t,y:n}))),ni=e=>{ie.FH.misc.register(e,Qr),ie.FH.events.on(e,\"terrain:destroyed\",(e,t)=>{removeFoliage(e,t)}),"
+      }
+    ]
+  },
+  {
     "name": "native remote hover particle export (_hoverParticles)",
     "file": "dist/js/bundle.js",
     "required": true,

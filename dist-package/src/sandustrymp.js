@@ -16,7 +16,7 @@
 			window.electron && window.electron.log && window.electron.log("info", "SandustryMP:game", line);
 		} catch (e) {}
 	};
-	const VER = "v0.3.3";
+	const VER = "v0.3.4";
 	const AUTHOR = "Cr0ss0vr";
 	const CONTRIBUTORS = "";
 	const VACUUM_CAPS = [500, 1000, 1500, 2000, 2500, 3000]; // capacity table from the game code (module 6420)
@@ -1037,6 +1037,7 @@
 		const decompressedBatch = await inflate(decodeBase64(msg.d));
 		const dataView = new DataView(decompressedBatch.buffer);
 		let readOffset = 0, appliedChunkCount = 0;
+		const removedTerrainCells = [];
 		while (readOffset + 6 <= decompressedBatch.length) {
 			const chunkX = dataView.getUint16(readOffset, true), chunkY = dataView.getUint16(readOffset + 2, true);
 			const chunkWidth = decompressedBatch[readOffset + 4], chunkHeight = decompressedBatch[readOffset + 5];
@@ -1055,7 +1056,18 @@
 			for (const r of changedRows) { const destinationOffset = (startY + r) * worldWidth + startX; wall.set(decompressedBatch.subarray(readOffset, readOffset + chunkWidth), destinationOffset); readOffset += chunkWidth; }
 			for (const r of changedRows) { const destinationOffset = (startY + r) * worldWidth + startX; if (shadow) shadow.set(decompressedBatch.subarray(readOffset, readOffset + chunkWidth), destinationOffset); readOffset += chunkWidth; }
 			for (const r of changedRows) { const destinationOffset = (startY + r) * worldWidth + startX; if (authorization) authorization.set(decompressedBatch.subarray(readOffset, readOffset + chunkWidth), destinationOffset); readOffset += chunkWidth; }
-			for (const r of changedRows) { const destinationOffset = (startY + r) * worldWidth + startX; if (cellIds) new Uint8Array(cellIds.buffer, cellIds.byteOffset + destinationOffset * 4, chunkWidth * 4).set(decompressedBatch.subarray(readOffset, readOffset + chunkWidth * 4)); readOffset += chunkWidth * 4; }
+			for (const r of changedRows) {
+				const destinationOffset = (startY + r) * worldWidth + startX;
+				if (cellIds && cellIdArray) {
+					for (let column = 0; column < chunkWidth; column++) {
+						const previousCellId = cellIdArray[destinationOffset + column];
+						const nextCellId = dataView.getUint32(readOffset + column * 4, true);
+						if (previousCellId > 0 && previousCellId <= 1000 && (nextCellId === 0 || nextCellId >= ELEMENTS_MIN)) removedTerrainCells.push({ x: startX + column, y: startY + r });
+					}
+					new Uint8Array(cellIds.buffer, cellIds.byteOffset + destinationOffset * 4, chunkWidth * 4).set(decompressedBatch.subarray(readOffset, readOffset + chunkWidth * 4));
+				}
+				readOffset += chunkWidth * 4;
+			}
 			// element type layer: type into elementData.type[cellId-MIN] for getResolvedTypeFromCellId to work (grabber)
 			for (const r of changedRows) { for (let cc = 0; cc < chunkWidth; cc++) { const ty = decompressedBatch[readOffset++]; if (elementTypes && cellIdArray) { const cid = cellIdArray[(startY + r) * worldWidth + startX + cc]; if (cid >= ELEMENTS_MIN && cid <= ELEMENTS_MAX) elementTypes[cid - ELEMENTS_MIN] = ty; } } }
 			if (collectorGoldCount) {
@@ -1068,6 +1080,12 @@
 				}
 			}
 			appliedChunkCount++;
+		}
+		const removeFoliageAt = sandustryMP._removeFoliageAt;
+		if (typeof removeFoliageAt === "function") {
+			for (const cell of removedTerrainCells) {
+				try { removeFoliageAt(state, cell.x, cell.y); } catch (e) {}
+			}
 		}
 		// Ochrona grabber: mirror may have retrieved STARA cell contents (host has not yet processed
 		// our grabPick/grabPlace). PICK: hold 0 until host confirms deletion. PLACE: hold sentinel
