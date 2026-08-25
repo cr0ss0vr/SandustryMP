@@ -49,6 +49,8 @@ fs.copyFileSync(path.join(sourceDirectory, 'sandustrymp.js'), path.join(appPath,
 recordAppliedChange('dist/js/sandustrymp.js copied');
 fs.copyFileSync(path.join(sourceDirectory, 'smp-main.js'), path.join(appPath, 'smp-main.js'));
 recordAppliedChange('smp-main.js copied');
+fs.copyFileSync(path.join(sourceDirectory, 'upnp.js'), path.join(appPath, 'upnp.js'));
+recordAppliedChange('upnp.js copied');
 
 // 2. index.html - <script> tag before bundle.js
 {

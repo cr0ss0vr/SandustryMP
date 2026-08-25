@@ -1,9 +1,9 @@
 // ============================================================================
 // SandustryMP — co-op multiplayer mod for Sandustry
-// Author / Autor: KAMIL PADULA
+// Author: Cr0ss0vr
 // Networking core (Electron main process).
 // Transports: Steam P2P (internet, zero-config via lobby + overlay invites)
-//             and a minimal dependency-free WebSocket (LAN / local testing).
+//             and a dependency-free Direct WebSocket transport with optional UPnP.
 // All network state lives here because the renderer reloads between scenes.
 // ============================================================================
 
@@ -13,6 +13,7 @@ const net = require('net');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const upnp = require('./upnp');
 
 const TAG = '[SandustryMP:net]';
 const USER_DATA_ARGUMENT = '--smp-userdata=';
@@ -71,6 +72,7 @@ const networkState = {
   peers: new Map(),     // id(string) -> peer {id, kind:'steam'|'ws', steamId64?, sock?, nick}
   wsServer: null,
   wsClient: null,       // WS client socket (client role, ws transport)
+  upnpMapping: null,
   p2pPoll: null,
   myNick: 'Player',
   myId: 'local',
@@ -86,7 +88,7 @@ const emitEvent = (kind, data) => { log('event:', kind, data ? JSON.stringify(da
 const emitMsg = (from, message) => sendRenderer('smp:msg', { from, msg: message });
 
 // ---------------------------------------------------------------------------
-// Minimalny WebSocket (RFC6455) - server and client on raw net, no dependencies
+// Minimal WebSocket (RFC6455) server and client on raw net, with no dependencies.
 // ---------------------------------------------------------------------------
 function wsEncodeFrame(payload, mask) {
   const data = Buffer.from(payload, 'utf8');
@@ -131,9 +133,10 @@ function wsFrameParser(socket, onText) {
 }
 
 function startWsServer(port) {
+  port = upnp.normalizePort(port);
   stopNetworking('restart');
   networkState.role = 'host'; networkState.transport = 'ws';
-  networkState.wsServer = net.createServer((sock) => {
+  const server = net.createServer((sock) => {
     let upgraded = false;
     let headerBuf = Buffer.alloc(0);
     const peerId = 'ws:' + sock.remoteAddress + ':' + sock.remotePort;
@@ -161,8 +164,24 @@ function startWsServer(port) {
     });
     sock.on('error', () => {});
   });
-  networkState.wsServer.on('error', (e) => emitEvent('error', { where: 'ws-server', message: e.message }));
-  networkState.wsServer.listen(port, () => emitEvent('hosting', { transport: 'ws', port }));
+  networkState.wsServer = server;
+  server.on('error', (e) => emitEvent('error', { where: 'ws-server', message: e.message }));
+  server.listen(port, '0.0.0.0', () => {
+    emitEvent('hosting', { transport: 'ws', port });
+    upnp.addPortMapping({ port, description: 'SandustryMP' }).then((mapping) => {
+      if (networkState.wsServer !== server || networkState.role !== 'host' || networkState.transport !== 'ws') {
+        upnp.removePortMapping(mapping).catch((error) => log('Could not remove stale UPnP mapping:', error.message));
+        return;
+      }
+      networkState.upnpMapping = mapping;
+      log('UPnP mapped TCP port', port, 'to', mapping.internalAddress + ':' + port);
+      emitEvent('direct-online', { port, externalAddress: mapping.externalAddress });
+    }).catch((error) => {
+      if (networkState.wsServer !== server) return;
+      log('UPnP mapping unavailable; Direct hosting remains available locally:', error.message);
+      emitEvent('direct-local-only', { port, message: error.message });
+    });
+  });
 }
 
 function joinWs(host, port, _retry) {
@@ -194,8 +213,8 @@ function joinWs(host, port, _retry) {
   sock.on('close', () => {
     networkState.peers.delete('host');
     emitEvent('peer-disconnected', { id: 'host' });
-    // AUTO-RECONNECT (LAN): we resurrect a broken link every 3 seconds. Licznik retries go through the _retry parameter
-    // (will survive the next sockets!). Udany handshake = stable link → future disconnection has 5 attempts again.
+    // AUTO-RECONNECT (Direct): retry a broken link every 3 seconds. The retry count is passed through _retry
+    // so it survives replacement sockets. A successful handshake resets the next disconnect to five attempts.
     // Stop user / other connection interrupts in the meantime (role/transport/peers check).
     if (networkState.role === 'client' && networkState.transport === 'ws' && networkState.wsClient === sock) {
       const next = upgraded ? 1 : retryCount + 1; // after a stable connection, count from 1; after a failed attempt +1
@@ -472,6 +491,11 @@ function netSend(obj, toId) {
 }
 
 function stopNetworking(reason) {
+  const mapping = networkState.upnpMapping;
+  networkState.upnpMapping = null;
+  if (mapping) upnp.removePortMapping(mapping)
+    .then(() => log('UPnP mapping removed for TCP port', mapping.port))
+    .catch((error) => log('Could not remove UPnP mapping:', error.message));
   if (networkState.wsServer) { try { networkState.wsServer.close(); } catch (e) {} networkState.wsServer = null; }
   if (networkState.wsClient) { try { networkState.wsClient.end(); } catch (e) {} networkState.wsClient = null; }
   if (networkState.lobby) { try { networkState.lobby.leave(); } catch (e) {} networkState.lobby = null; }
@@ -566,6 +590,7 @@ function autoUpdateFromWorkshop() {
       fs.writeFileSync(indexPath, indexContents);
     } catch (e) { log('AUTO-UPDATE: renderer module tags:', e.message); }
     try { fs.copyFileSync(path.join(ws, 'src', 'smp-main.js'), path.join(appDir, 'smp-main.js')); } catch (e) {}
+    try { fs.copyFileSync(path.join(ws, 'src', 'upnp.js'), path.join(appDir, 'upnp.js')); } catch (e) {}
     try {
       const pl = path.join(appDir, 'preload.js');
       let ps = fs.readFileSync(pl, 'utf8');
@@ -631,18 +656,20 @@ function init(opts) {
   }, 2000);
 
   const { ipcMain, app } = require('electron');
+  try { app.on('before-quit', () => stopNetworking('shutdown')); } catch (e) {}
   // Handle an invite accepted while the game is running and the user is outside the overlay.
   // Steam fires up the second instance → single-instance kills it and we get its argv here.
   try { app.on('second-instance', (event, argv) => { log('second-instance argv:', JSON.stringify(argv)); tryJoinFromArgv(argv, 'second-instance'); }); } catch (e) {}
   ipcMain.handle('smp:host-steam', async () => { try { return { ok: true, ...(await hostSteam()) }; } catch (e) { return { ok: false, error: e.message }; } });
   ipcMain.handle('smp:join-steam', async (ev, lobbyId) => { try { return { ok: true, ...(await joinSteamLobby(lobbyId)) }; } catch (e) { return { ok: false, error: e.message }; } });
   ipcMain.handle('smp:invite', async () => { try { if (!networkState.lobby) return { ok: false, error: 'no lobby' }; networkState.lobby.openInviteDialog(); return { ok: true }; } catch (e) { return { ok: false, error: e.message }; } });
-  ipcMain.handle('smp:host-ws', async (ev, port) => { try { startWsServer(port || 27777); return { ok: true }; } catch (e) { return { ok: false, error: e.message }; } });
-  ipcMain.handle('smp:join-ws', async (ev, host, port) => { try { joinWs(host, port || 27777); return { ok: true }; } catch (e) { return { ok: false, error: e.message }; } });
+  ipcMain.handle('smp:host-ws', async (ev, port) => { try { startWsServer(port === undefined ? 27777 : port); return { ok: true }; } catch (e) { return { ok: false, error: e.message }; } });
+  ipcMain.handle('smp:join-ws', async (ev, host, port) => { try { joinWs(host, upnp.normalizePort(port === undefined ? 27777 : port)); return { ok: true }; } catch (e) { return { ok: false, error: e.message }; } });
   ipcMain.handle('smp:stop', async () => { stopNetworking(); return { ok: true }; });
   ipcMain.on('smp:send', (ev, payload, toId) => netSend(payload, toId));
   ipcMain.handle('smp:status', async () => ({
     role: networkState.role, transport: networkState.transport, myNick: networkState.myNick, myId: networkState.myId,
+    directPort: networkState.wsServer && networkState.wsServer.address() ? networkState.wsServer.address().port : null,
     lobbyId: networkState.lobby ? String(networkState.lobby.id) : null,
     peers: [...networkState.peers.values()].filter((p) => p.admitted).map((p) => ({ id: p.id, kind: p.kind, nick: p.nick })),
     gameFp: gameFingerprint(),

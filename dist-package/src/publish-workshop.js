@@ -34,7 +34,7 @@ That's it — [b]forever[/b]. From v0.9.39 the mod checks the Workshop folder at
 [h2]Features (v0.9.39 — full co-op)[/h2]
 [list]
 [*] AUTO-UPDATE: install once, the mod keeps itself (and both players) up to date at every launch
-[*] Steam invites (or LAN) with AUTO-RECONNECT on both transports — zero network setup
+[*] Steam invites or Direct connections with AUTO-RECONNECT on both transports
 [*] Shared live world: sand, fluids, digging, unlocked zones — one authoritative simulation streamed in real time (row-delta protocol + fog-of-war skipping = low bandwidth, fast joins even on huge maps)
 [*] Team chat in the panel; item drops appear instantly for everyone
 [*] Every player tool works for everyone: shovel, spray, firearms & rockets, vacuum, grabber, flamethrower, cryoblaster, demolisher
@@ -61,7 +61,7 @@ Both players must run the same mod version (the panel warns in red if they diffe
 [list]
 [*] [b]Hide / show panel:[/b] click the panel header, or press [b]Ctrl+Shift+H[/b]. (It no longer uses F9 — that's the game's quick-load key.)
 [*] [b]Host (Steam) / Invite:[/b] start a Steam co-op session and invite a friend.
-[*] [b]Host LAN / Join LAN:[/b] local network play (ip:port, default 27777).
+[*] [b]Host Direct / Join Direct:[/b] address-based play with a configurable port and UPnP online hosting when supported.
 [*] [b]Send world:[/b] send your latest save to everyone connected (do this once at the start).
 [*] [b]Resync:[/b] force a full re-sync if the mirrored world ever looks out of date.
 [*] [b]Stop:[/b] leave / end the session.

@@ -4,7 +4,7 @@ SandustryMP is an experimental co-op multiplayer mod for Sandustry.
 
 **Author:** Cr0ss0vr
 
-**Version:** v0.2.11
+**Version:** v0.3.0
 
 The host owns the authoritative world. Clients receive that world and send gameplay requests to the host, which validates and executes them through Sandustry's original game logic.
 
@@ -47,13 +47,13 @@ Select **Multiplayer** from Sandustry's main menu.
 3. The host loads or creates the world.
 4. The joining player waits for the host's temporary world snapshot to import and load.
 
-### LAN
+### Direct
 
-1. The host selects **Host LAN**.
-2. The client selects **Join LAN** and enters the host address.
+1. The host selects **Host Direct** and chooses a port.
+2. The client selects **Join Direct** and enters the host address and port.
 3. The host loads or creates the world.
 
-The default LAN port is `27777`.
+The default Direct port is `27777`. SandustryMP uses UPnP for online hosting when the router supports it; otherwise Direct hosting remains available over LAN or VPN.
 
 ## How synchronization works
 

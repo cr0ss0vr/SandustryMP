@@ -11,7 +11,27 @@
 			if (!net) log("WARNING: missing window.sandustrympNet - preload not updated?");
 
 			const setStatus = (text, color) => {
-				if (sandustryMP._hud) { const el = sandustryMP._hud.querySelector("#smp-status"); el.textContent = text; el.style.color = color || "#8f8"; }
+				if (sandustryMP._hud) {
+					const el = sandustryMP._hud.querySelector("#smp-status");
+					el.textContent = text; el.style.color = color || "#8f8"; el.style.cursor = ""; el.title = ""; el.onclick = null;
+				}
+			};
+			const setDirectOnlineStatus = (address, port, reveal) => {
+				const hiddenText = t("hosting_direct_online_hidden", port);
+				const revealedText = t("hosting_direct_online", address || "public address", port);
+				const text = reveal ? revealedText : hiddenText;
+				setStatus(text);
+				const attach = (element) => {
+					if (!element) return;
+					element.textContent = text; element.style.cursor = "pointer"; element.title = reveal ? "Click to hide the public address" : "Click to reveal the public address";
+					element.onclick = () => setDirectOnlineStatus(address, port, !reveal);
+				};
+				attach(sandustryMP._hud && sandustryMP._hud.querySelector("#smp-status"));
+				attach(document.getElementById("smp-lb-status"));
+				if (reveal) setTimeout(() => {
+					const status = sandustryMP._hud && sandustryMP._hud.querySelector("#smp-status");
+					if (status && status.textContent === revealedText) setDirectOnlineStatus(address, port, false);
+				}, 8000);
 			};
 			const setSyncInfo = (text) => {
 				if (sandustryMP._hud) sandustryMP._hud.querySelector("#smp-sync").textContent = text;
@@ -39,10 +59,17 @@
 					if (ev.kind === "hosting") {
 						sandustryMP.net.role = "host"; sandustryMP.net.transport = ev.transport;
 						setStatus(ev.transport === "steam" ? t("hosting_steam") : t("hosting_lan", ev.port));
+						sandustryMP.net.directPort = ev.transport === "ws" ? ev.port : null;
 						sandustryMP.net.lobbyId = ev.lobbyId || null; sandustryMP._autoSentWid = null; sandustryMP._pendingWorldSend = false; // auto-send reset; remember lobbyId
 						resetWorldQueue(); // new host session starts clean, peer-connected re-queues the full world
 							updateLobbyIdDisplay();
 							if (ev.transport === "steam") showInviteButton(true);
+					} else if (ev.kind === "direct-online") {
+						sandustryMP.net.directPort = ev.port; sandustryMP.net.externalAddress = ev.externalAddress || null;
+						setDirectOnlineStatus(ev.externalAddress, ev.port, false);
+					} else if (ev.kind === "direct-local-only") {
+						sandustryMP.net.directPort = ev.port; sandustryMP.net.externalAddress = null;
+						setStatus(t("hosting_direct_local", ev.port), "#fd5");
 					} else if (ev.kind === "joined") {
 						sandustryMP.net.role = "client"; sandustryMP.net.transport = ev.transport;
 						resetDecisionClockSession();
@@ -55,7 +82,7 @@
 						sandustryMP._fireQ = []; sandustryMP._cryoQ = []; sandustryMP._grabbedCells.clear(); sandustryMP._placedCells.clear(); sandustryMP._volcQ = []; sandustryMP._caulkQ = []; sandustryMP._caulkRmQ = []; sandustryMP._shakeQ = []; sandustryMP._energyToolStates = new Map(); sandustryMP._cryoIntentState = null; // previous session state belongs to different coordinates/world
 						// own nickname (localStorage) broadcast via the existing hello protocol - no changes in the IPC bridge
 						if (sandustryMP._nickCustom) { try { net.send({ t: "hello", nick: sandustryMP._nickCustom }); } catch (e) {} }
-						setStatus(t("joined", ev.transport));
+						setStatus(t("joined", ev.transport === "ws" ? "Direct" : "Steam"));
 					} else if (ev.kind === "peer-hello" || ev.kind === "peer-connected") {
 						const isNew = !sandustryMP.peers.has(ev.id);
 						if (isNew) sandustryMP.peers.set(ev.id, { nick: ev.nick || "?", x: 0, y: 0, tx: 0, ty: 0, lastSeen: performance.now(), joinAnnounced: false });
@@ -106,10 +133,10 @@
 				net.status().then((s) => {
 					sandustryMP.net.role = s.role; sandustryMP.net.transport = s.transport;
 					try { sandustryMP._nickCustom = localStorage.getItem("smp_nick") || null; } catch (e) { sandustryMP._nickCustom = null; }
-					sandustryMP._myNick = sandustryMP._nickCustom || s.myNick || null; // own nickname > nickname Steam > default (feedback TCentraL: LAN = "Player" permanently)
+					sandustryMP._myNick = sandustryMP._nickCustom || s.myNick || null; // Custom nickname, then Steam nickname, then the Direct default.
 					sandustryMP._gameFp = s.gameFp || null; // game build imprint (guard of different builds between players)
 					for (const p of s.peers) sandustryMP.peers.set(p.id, { nick: p.nick, x: 0, y: 0, tx: 0, ty: 0, lastSeen: performance.now() });
-					if (s.role === "host") setStatus("HOST (" + s.transport + ") — gracze: " + (s.peers.length + 1));
+					if (s.role === "host") setStatus(s.transport === "steam" ? t("hosting_steam") : t("hosting_lan", s.directPort || 27777));
 					else if (s.role === "client") setStatus("CONNECTED - players: " + (s.peers.length + 1));
 				}).catch(() => {});
 			}

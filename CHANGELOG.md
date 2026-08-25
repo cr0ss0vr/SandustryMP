@@ -2,6 +2,12 @@
 
 All notable changes to SandustryMP are recorded here. Dates use the ISO `YYYY-MM-DD` format.
 
+## v0.3.0 - 2026-08-25
+
+- Renamed LAN hosting and joining to Direct hosting and joining throughout the multiplayer interface.
+- Added a configurable Direct host port, with the selected host and join ports remembered separately.
+- Added best-effort UPnP TCP port mapping for online Direct hosting, including public-address status and automatic mapping cleanup when hosting stops.
+
 ## v0.2.11 - 2026-08-25
 
 - Clear disconnected players' name labels and off-screen indicators immediately, including when the last client leaves or the host render loop is paused.

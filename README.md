@@ -4,9 +4,9 @@ SandustryMP is an experimental co-op multiplayer mod for Sandustry.
 
 **Author:** Cr0ss0vr
 
-**Current version:** v0.2.11
+**Current version:** v0.3.0
 
-The host owns the authoritative game state. Other players connect through Steam or LAN, receive the host's world, and send gameplay requests back to the host for validation and execution.
+The host owns the authoritative game state. Other players connect through Steam or a Direct connection, receive the host's world, and send gameplay requests back to the host for validation and execution.
 
 > Sandustry does not currently provide an official mod API for this project. SandustryMP patches the Electron application and may need compatibility updates after a Sandustry release.
 
@@ -27,7 +27,7 @@ Both the host and every client must use the same SandustryMP version and a compa
 Open Sandustry and select **Multiplayer** from the main menu.
 
 - **Steam:** host a Steam session and invite another player, or join an existing lobby.
-- **LAN:** select **Host LAN** on the host and connect with the host's address from the client. The default port is `27777`.
+- **Direct:** select **Host Direct**, choose a port, and connect with **Join Direct** using the host's address and port. The default port is `27777`. SandustryMP requests a UPnP mapping for online connections; if the router does not support or permit UPnP, Direct hosting remains available over LAN or VPN.
 
 The host should load or create the world. When a client joins, the host creates a temporary save snapshot and transfers that exact snapshot. The client imports and loads it, then both sides remove the temporary snapshot from their loadable saves.
 
@@ -54,7 +54,7 @@ Periodic snapshots and event messages reconcile structures, pipes, resources, re
 Networking runs in the Electron main process so it survives renderer scene changes. SandustryMP supports:
 
 - Steam lobbies and peer-to-peer packets.
-- A dependency-free WebSocket transport for LAN play.
+- A dependency-free Direct WebSocket transport with best-effort UPnP online hosting.
 - Version and game-build checks during connection setup.
 - Acknowledgements, reconnect handling, ping measurement, and temporary save transfer.
 
@@ -67,7 +67,8 @@ Networking runs in the Electron main process so it survives renderer scene chang
 | `src/state.js` | Shared runtime state and synchronization bookkeeping |
 | `src/menu.js` | Main-menu Multiplayer button and lobby interface |
 | `src/localisation.js` | Localized user-interface strings |
-| `src/smp-main.js` | Electron main-process Steam, LAN, IPC, save-transfer, and logging support |
+| `src/smp-main.js` | Electron main-process Steam, Direct, IPC, save-transfer, and logging support |
+| `src/upnp.js` | UPnP gateway discovery and Direct TCP port-mapping lifecycle |
 | `src/smp-preload-append.js` | Preload bridge exposed to the renderer |
 | `src/sim-worker-bootstrap.js` | Simulation-worker deterministic clock bootstrap |
 | `src/patches.json` | Version-specific bundle patch anchors |

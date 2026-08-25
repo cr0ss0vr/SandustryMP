@@ -447,7 +447,7 @@
 			p.appendChild(sub);
 
 			if (view === "start") {
-				// player nickname (feedback TCentraL: on LAN everyone is "Player") - saved in localStorage,
+				// Player nickname for Direct connections, saved in localStorage.
 				// broadcast via hello protocol on join / to new peers
 				const nickRow = document.createElement("div");
 				nickRow.style.cssText = "margin:0 0 8px;font-size:12px;color:#9fb6c9";
@@ -471,18 +471,36 @@
 				};
 				p.appendChild(bSteam);
 				const bLan = lbBtn(t("btn_host_lan"), t("lb_host_lan_d"), false);
-				bLan.onclick = async () => {
-					try { const r = await net.hostWs(27777); if (!r.ok) setStatus(t("error", r.error), "#f66"); }
-					catch (e) { setStatus(t("error", e.message), "#f66"); log("lobby hostWs error:", e.message); }
+				const hostRow = document.createElement("div");
+				hostRow.style.cssText = "display:none;margin:2px 0 6px;padding:0 2px";
+				let savedHostPort = "27777";
+				try { savedHostPort = localStorage.getItem("smp_direct_host_port") || savedHostPort; } catch (e) {}
+				const hostPort = lbInput(t("lb_port"), savedHostPort, 80); hostPort.maxLength = 5;
+				const hostGo = document.createElement("button");
+				hostGo.textContent = t("btn_start_host");
+				hostGo.style.cssText = "margin-left:6px;background:#1d4a6b;color:#fff;border:1px solid rgba(255,255,255,.2);border-radius:3px;font:600 13px inherit;cursor:pointer;padding:5px 12px";
+				const doHostDirect = async () => {
+					const hostPortNumber = Number((hostPort.value || "").trim());
+					if (!Number.isInteger(hostPortNumber) || hostPortNumber < 1 || hostPortNumber > 65535) { hostPort.focus(); hostPort.select(); return; }
+					try { localStorage.setItem("smp_direct_host_port", String(hostPortNumber)); } catch (e) {}
+					setStatus(t("creating_lobby"));
+					try { const r = await net.hostWs(hostPortNumber); if (!r.ok) { setStatus(t("error", r.error), "#f66"); return; } }
+					catch (e) { setStatus(t("error", e.message), "#f66"); log("Direct host error:", e.message); return; }
 					renderLobby(true);
 				};
-				p.appendChild(bLan);
-				// Include LAN: button + address fields
+				hostPort.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); doHostDirect(); } });
+				hostGo.onclick = doHostDirect;
+				hostRow.appendChild(hostPort); hostRow.appendChild(hostGo);
+				bLan.onclick = () => { hostRow.style.display = hostRow.style.display === "none" ? "block" : "none"; if (hostRow.style.display === "block") { hostPort.focus(); hostPort.select(); } };
+				p.appendChild(bLan); p.appendChild(hostRow);
+				// Direct join address and port fields.
 				const bJoin = lbBtn(t("btn_join_lan"), t("lb_join_lan_d"), false);
 				const row = document.createElement("div");
 				row.style.cssText = "display:none;margin:2px 0 6px;padding:0 2px";
 				const ip = lbInput("IP", "127.0.0.1", 170);
-				const port = lbInput("port", "27777", 62); port.maxLength = 5;
+				let savedJoinPort = "27777";
+				try { savedJoinPort = localStorage.getItem("smp_direct_join_port") || savedJoinPort; } catch (e) {}
+				const port = lbInput(t("lb_port"), savedJoinPort, 62); port.maxLength = 5;
 				const go = document.createElement("button");
 				go.textContent = t("btn_connect");
 				go.style.cssText = "margin-left:6px;background:#1d4a6b;color:#fff;border:1px solid rgba(255,255,255,.2);border-radius:3px;font:600 13px inherit;cursor:pointer;padding:5px 12px";
@@ -490,8 +508,9 @@
 					let h = (ip.value || "").trim(); let pr = (port.value || "").trim();
 					if (h.indexOf(":") >= 0) { const a = h.split(":"); h = a[0]; if (a[1]) { pr = a[1]; port.value = pr; } ip.value = h; }
 					if (!h) { ip.focus(); return; }
-					const pn = parseInt(pr || "27777", 10);
-					if (!(pn > 0 && pn < 65536)) { port.focus(); port.select(); return; }
+					const pn = Number(pr || "27777");
+					if (!Number.isInteger(pn) || pn < 1 || pn > 65535) { port.focus(); port.select(); return; }
+					try { localStorage.setItem("smp_direct_join_port", String(pn)); } catch (e) {}
 					setStatus(t("creating_lobby"));
 					const r = await net.joinWs(h, pn);
 					if (!r.ok) setStatus(t("error", r.error), "#f66");
@@ -518,7 +537,7 @@
 			} else {
 				// LOBBY: role badge + status + lobby id + invite + player list + world + disconnect
 				const badge = document.createElement("div");
-				const trName = sandustryMP.net.transport === "steam" ? "Steam" : "LAN";
+				const trName = sandustryMP.net.transport === "steam" ? "Steam" : "Direct";
 				badge.style.cssText = "font-weight:800;font-size:15px;margin:2px 0 4px;color:" + (sandustryMP.net.role === "host" ? "#5f5" : "#6cf");
 				badge.textContent = sandustryMP.net.role === "host" ? t("badge_host", trName) : t("badge_client", trName);
 				p.appendChild(badge);
@@ -607,6 +626,9 @@
 			if (st2) {
 				const hudSt = document.getElementById("smp-status");
 				st2.textContent = (hudSt && hudSt.textContent) || "";
+				st2.style.cursor = (hudSt && hudSt.style.cursor) || "";
+				st2.title = (hudSt && hudSt.title) || "";
+				st2.onclick = hudSt && hudSt.onclick ? () => hudSt.onclick() : null;
 			}
 			const idRow = document.getElementById("smp-lb-id");
 			if (idRow && sandustryMP.net.lobbyId && idRow.textContent.indexOf(t("lb_copied")) < 0) {

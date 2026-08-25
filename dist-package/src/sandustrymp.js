@@ -16,7 +16,7 @@
 			window.electron && window.electron.log && window.electron.log("info", "SandustryMP:game", line);
 		} catch (e) {}
 	};
-	const VER = "v0.2.11";
+	const VER = "v0.3.0";
 	const AUTHOR = "Cr0ss0vr";
 	const CONTRIBUTORS = "";
 	const VACUUM_CAPS = [500, 1000, 1500, 2000, 2500, 3000]; // capacity table from the game code (module 6420)
@@ -137,7 +137,7 @@
 	// ------------------------------------------------------------------
 	const SMP_PLAYER_ID_PREFIX = "sandustrymp_player_id:";
 	function getSmpProfileName() {
-		// `--smp-profile=name` is intended for running multiple LAN clients from one machine.
+		// `--smp-profile=name` is intended for running multiple Direct clients from one machine.
 		// SandustryMP's existing `--smp-userdata=...` launcher isolation also gives each
 		// instance a separate localStorage, so the default profile remains distinct there.
 		try {
@@ -3689,7 +3689,7 @@
 		const hud = document.getElementById("smp-hud"); if (!hud) return;
 		const q = (id) => hud.querySelector(id);
 		const role = sandustryMP.net.role;
-		const trName = sandustryMP.net.transport === "steam" ? "Steam" : "LAN";
+		const trName = sandustryMP.net.transport === "steam" ? "Steam" : "Direct";
 		const badge = q("#smp-badge");
 		const roleColor = role === "host" ? "#5f5" : role === "client" ? "#6cf" : "#f66";
 		if (badge) {
