@@ -137,6 +137,17 @@
    ]
   },
   {
+    "name": "native remote hover particle export (_hoverParticles)",
+    "file": "dist/js/bundle.js",
+    "required": true,
+    "variants": [
+      {
+        "anchor": ",ue=e=>{const t=e.store.player;for(let n=0;n<2;n++){const n=o.A.getRandomIntBetween(-2,5),r=o.A.getRandomIntBetween(6,8),i={x:60*o.A.getRandomFloatBetween(-.5,.5),y:60*o.A.getRandomFloatBetween(.5,1.5)};(0,s.oo)(e,t.x+n*a.A.cellSize,t.y+r*a.A.cellSize,i,{background:!0})}},fe=",
+        "patched": ",ue=e=>{const t=e.store.player;for(let n=0;n<2;n++){const n=o.A.getRandomIntBetween(-2,5),r=o.A.getRandomIntBetween(6,8),i={x:60*o.A.getRandomFloatBetween(-.5,.5),y:60*o.A.getRandomFloatBetween(.5,1.5)};(0,s.oo)(e,t.x+n*a.A.cellSize,t.y+r*a.A.cellSize,i,{background:!0})}},smpHoverParticles=(window.SandustryMP&&(window.SandustryMP._hoverParticles=(e,t,n)=>{for(let r=0;r<2;r++){const r=o.A.getRandomIntBetween(-2,5),i=o.A.getRandomIntBetween(6,8),l={x:60*o.A.getRandomFloatBetween(-.5,.5),y:60*o.A.getRandomFloatBetween(.5,1.5)};(0,s.oo)(e,t+r*a.A.cellSize,n+i*a.A.cellSize,l,{background:!0})}})),fe="
+      }
+    ]
+  },
+  {
    "name": "drill client intent hook (_energyToolUse)",
    "critical": false,
    "variants": [

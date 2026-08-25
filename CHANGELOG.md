@@ -2,6 +2,11 @@
 
 All notable changes to SandustryMP are recorded here. Dates use the ISO `YYYY-MM-DD` format.
 
+## v0.3.3 - 2026-08-25
+
+- Synchronize each player's hover state and reproduce the native hover particle cloud for remote players.
+- Emit remote hover particles only while the remote player is inside the current camera view.
+
 ## v0.3.2 - 2026-08-25
 
 - Disconnect clients from the multiplayer session whenever they return to the main menu after entering a world, preserving the exit marker across the renderer recreation performed by Sandustry and stopping before another world can be requested.

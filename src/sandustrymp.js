@@ -16,7 +16,7 @@
 			window.electron && window.electron.log && window.electron.log("info", "SandustryMP:game", line);
 		} catch (e) {}
 	};
-	const VER = "v0.3.2";
+	const VER = "v0.3.3";
 	const AUTHOR = "Cr0ss0vr";
 	const CONTRIBUTORS = "";
 	const VACUUM_CAPS = [500, 1000, 1500, 2000, 2500, 3000]; // capacity table from the game code (module 6420)
@@ -440,6 +440,7 @@
 			if (msg.facing === 1 || msg.facing === -1) p.syncedFacing = msg.facing;
 			p.aim = typeof msg.aim === "number" ? msg.aim : 0;
 			p.trailAlpha = typeof msg.trail === "number" ? msg.trail : 0;
+			p.hovering = msg.hover === true;
 			// action preview (pose phantom / grabber reticle) - cursor in the world + build intent
 			p.mwx = typeof msg.mwx === "number" ? msg.mwx : null;
 			p.mwy = typeof msg.mwy === "number" ? msg.mwy : null;
@@ -3944,6 +3945,18 @@
 		return cam ? { x: wx - cam.x, y: wy - cam.y } : { x: wx, y: wy };
 	}
 	function peerProjectileCount(id, p) { return sandustryMP.net.role === "client" ? (sandustryMP.remoteProjectiles || []).length : (p.projectiles || []).length; }
+	function isPeerInView(ghostCanvas, screen, margin) {
+		if (!ghostCanvas || !screen) return false;
+		const viewMargin = typeof margin === "number" ? margin : 20;
+		return screen.x > -viewMargin && screen.y > -viewMargin && screen.x < ghostCanvas.width + viewMargin && screen.y < ghostCanvas.height + viewMargin;
+	}
+	function renderRemoteHoverParticles(state, peer, now, inView) {
+		if (!inView || !peer.hovering || now - (peer._lastHoverParticle || 0) < 16) return;
+		const renderHoverParticles = sandustryMP._hoverParticles;
+		if (typeof renderHoverParticles !== "function") return;
+		peer._lastHoverParticle = now;
+		try { renderHoverParticles(state, peer.x, peer.y); } catch (e) {}
+	}
 
 	function drawGhosts(state) {
 		if (!sandustryMP.peers.size) { if (sandustryMP.peerPuppets.size) removeAllPeerPuppets(); else clearGhostCanvas(); return; }
@@ -3960,6 +3973,8 @@
 			if (speed > 0.02 && p.syncedFacing == null) p.facing = (p.vx || 0) < 0 ? -1 : 1;
 			const facing = (p.syncedFacing === 1 || p.syncedFacing === -1) ? p.syncedFacing : (p.facing || 1);
 			const screen = worldToScreen(state, p.x + PUPPET_ANCHOR_DX, p.y + PUPPET_ANCHOR_DY);
+			const onScreen = isPeerInView(gc, screen, 20);
+			renderRemoteHoverParticles(state, p, now, onScreen);
 			const pp = ensurePeerPuppet(state, id);
 			if (pp) {
 				pp.puppet.x = screen.x; pp.puppet.y = screen.y;
@@ -3974,7 +3989,6 @@
 				p._lastProjCount = projCount;
 				if (pp.muzzleFlash) pp.muzzleFlash.visible = now < pp.flashUntil;
 			}
-			const onScreen = gc && screen.x > -20 && screen.y > -20 && screen.x < gc.width + 20 && screen.y < gc.height + 20;
 			if (ctx && gc && onScreen) {
 				ctx.globalAlpha = stale ? 0.4 : 1;
 				ctx.font = "10px monospace"; ctx.textAlign = "center";
@@ -4127,7 +4141,7 @@
 			const bi = getBuildIntent(state);
 			const mw = getMouseWorld(state);
 			if (bi && !sandustryMP._biLogged) { sandustryMP._biLogged = true; log("Position intent detected (the ghost should appear for the other player): bt=" + bi.bt); }
-			net.send({ t: "pos", x: Math.round(pl.x * 10) / 10, y: Math.round(pl.y * 10) / 10, tools: getVisibleTools(state), facing: getFacing(state), aim: getAimAngle(state), trail: getTrailAlpha(state),
+			net.send({ t: "pos", x: Math.round(pl.x * 10) / 10, y: Math.round(pl.y * 10) / 10, tools: getVisibleTools(state), facing: getFacing(state), aim: getAimAngle(state), trail: getTrailAlpha(state), hover: pl.isHovering === true,
 				mwx: mw ? mw.x : null, mwy: mw ? mw.y : null,           // cursor in the world (action preview)
 				bt: bi ? bi.bt : null, boffs: bi ? bi.offs : null });   // intencja pozy: typ + offsety (fantom u innych graczy)
 		}
