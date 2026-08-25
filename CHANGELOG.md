@@ -2,6 +2,10 @@
 
 All notable changes to SandustryMP are recorded here. Dates use the ISO `YYYY-MM-DD` format.
 
+## v0.3.8 - 2026-08-25
+
+- Refresh the host's resource HUD immediately after an accepted client upgrade deducts its cost from the shared Fluxite pool.
+
 ## v0.3.7 - 2026-08-25
 
 - Drive held client grabber requests from the render frame instead of Sandustry's slower native collection pulse, allowing another verified pickup immediately after each host response.

@@ -16,7 +16,7 @@
 			window.electron && window.electron.log && window.electron.log("info", "SandustryMP:game", line);
 		} catch (e) {}
 	};
-	const VER = "v0.3.7";
+	const VER = "v0.3.8";
 	const AUTHOR = "Cr0ss0vr";
 	const CONTRIBUTORS = "";
 	const VACUUM_CAPS = [500, 1000, 1500, 2000, 2500, 3000]; // capacity table from the game code (module 6420)
@@ -2086,10 +2086,7 @@
 				// The resource HUD is a React overlay and does not observe direct store mutations.
 				// Opening a management menu incidentally rerenders it; request that same refresh
 				// immediately whenever the authoritative host Fluxite total changes.
-				try {
-					const ui = sandustryMP.gameApi.ui;
-					if (ui && ui.update) ui.update(state, UI_SECTION_RESOURCES);
-				} catch (e) {}
+				refreshResourceHud(state);
 			}
 			if (msg.pp !== undefined) state.store.productionPoints = msg.pp;
 			const sharedState = state.shared;
@@ -2137,6 +2134,12 @@
 			if (msg.bu) reconcileClientBuildingHotbar(state, msg.bu);
 			if (msg.pg && state.store.progression) Object.assign(state.store.progression, msg.pg);
 				sandustryMP._resSnapshot = Object.assign({}, state.store.resources); // re-base for customer increments (dotNine)
+		} catch (e) {}
+	}
+	function refreshResourceHud(state) {
+		try {
+			const ui = sandustryMP.gameApi.ui;
+			if (ui && ui.update) ui.update(state, UI_SECTION_RESOURCES);
 		} catch (e) {}
 	}
 
@@ -3322,6 +3325,7 @@
 					if (u) {
 						if (typeof msg.lv === "number" && msg.lv > (u.level || 0)) { u.availableLevel = msg.lv; u.level = msg.lv; }
 						deductCosts(state, msg.cost);
+						refreshResourceHud(state);
 						try { sandustryMP.gameApi.events.emit(state, "upgrade:purchased", { itemId: msg.it, upgradeId: msg.ug, level: msg.lv }); } catch (e) {}
 						log("HOST: client upgrade", msg.it + "." + msg.ug, "→ lvl", msg.lv);
 					} else log("HOST: unknown client upgrade:", msg.it, msg.ug);
