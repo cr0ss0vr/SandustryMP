@@ -16,7 +16,7 @@
 			window.electron && window.electron.log && window.electron.log("info", "SandustryMP:game", line);
 		} catch (e) {}
 	};
-	const VER = "v0.2.9";
+	const VER = "v0.2.10";
 	const AUTHOR = "Cr0ss0vr";
 	const CONTRIBUTORS = "";
 	const VACUUM_CAPS = [500, 1000, 1500, 2000, 2500, 3000]; // capacity table from the game code (module 6420)
@@ -2365,6 +2365,13 @@
 		const getInfo = el.getInfoAtPos;
 		const removeAt = el.removeAt;
 		if (!getInfo || !removeAt) { if (!sandustryMP._grabApiWarned) { sandustryMP._grabApiWarned = true; log("ERROR grabH: missing getInfoAtPos/removeAt — el:", Object.keys(el).join(",")); } return; }
+		const authorization = sandustryMP.gameApi.authorization;
+		const canGrab = authorization && authorization.canGrab;
+		if (typeof canGrab !== "function") {
+			if (!sandustryMP._grabAuthorizationWarned) { sandustryMP._grabAuthorizationWarned = true; log("ERROR grabH: native authorization.canGrab is unavailable; rejecting client grab request"); }
+			net.send({ t: "grabres", q: Number.isInteger(msg.q) ? msg.q : 0, types: [], offs: [], bx: msg.x, by: msg.y }, fromId);
+			return;
+		}
 		const types = [], offs = [];
 		// The empty client tank is a square matrix. Use its exact width for the authoritative selection;
 		// the old fixed radius scanned 9x9 even when the equipped grabber was only 1x1 through 5x5.
@@ -2385,7 +2392,7 @@
 		if (sandustryMP._mtLiquid === undefined) { try { const wc = el.getConfig && el.getConfig(3); sandustryMP._mtLiquid = wc && wc.matterType != null ? wc.matterType : null; } catch (e) { sandustryMP._mtLiquid = null; } }
 		const wg = state.store.upgrades && state.store.upgrades.grabber && state.store.upgrades.grabber.waterGrab;
 		const canLiquid = !!(wg && wg.level);
-		let gateSkipped = 0;
+		let gateSkipped = 0, authorizationSkipped = 0;
 		// JEDEN TYP NA TANK (fix derErste67 #2: "grabbing dirt also grabs stone and gold"): vanilla
 		// Lock the tank to the first captured type (`T[0]`; `if(L&&U!==L)continue`). The client can send
 		// locked tank type (msg.lt); with an empty tank, the first element collected defines the lock.
@@ -2407,6 +2414,9 @@
 			}
 			const x = msg.x + dx, y = msg.y + dy;
 			try {
+				// Match the native grabber's per-cell restricted-zone validation before
+				// resolving or removing any element from the authoritative world.
+				if (canGrab(state, x, y) === false) { authorizationSkipped++; continue; }
 				const info = getInfo(state, x, y);
 				if (!info || !info.elementType) continue;
 				if (info.isGrabbable === false) continue; // respect the flag when there is one; when there is no supply - take it (the client aimed)
@@ -2425,8 +2435,9 @@
 			} catch (e) {}
 		}
 		net.send({ t: "grabres", q: Number.isInteger(msg.q) ? msg.q : 0, types, offs, bx: msg.x, by: msg.y }, fromId);
-		if (types.length) { if ((sandustryMP._grabHostDiag = (sandustryMP._grabHostDiag || 0) + 1) <= 40) log("HOST grabH @", msg.x, msg.y, "size=" + grabberSize + "x" + grabberSize, "collected", types.length, "elements" + (gateSkipped ? " (omitted " + gateSkipped + " fluids - no waterGrab)" : "")); }
+		if (types.length) { if ((sandustryMP._grabHostDiag = (sandustryMP._grabHostDiag || 0) + 1) <= 40) log("HOST grabH @", msg.x, msg.y, "size=" + grabberSize + "x" + grabberSize, "collected", types.length, "elements" + (gateSkipped ? " (omitted " + gateSkipped + " fluids - no waterGrab)" : "") + (authorizationSkipped ? " (rejected " + authorizationSkipped + " restricted cells)" : "")); }
 		else if (gateSkipped && (sandustryMP._grabGateDiag = (sandustryMP._grabGateDiag || 0) + 1) <= 10) log("HOST grabH: collected 0 elements;", gateSkipped, "fluids blocked (no waterGrab upgrade)");
+		else if (authorizationSkipped && (sandustryMP._grabAuthorizationDiag = (sandustryMP._grabAuthorizationDiag || 0) + 1) <= 10) log("HOST grabH: collected 0 elements;", authorizationSkipped, "cells rejected by native restricted-zone authorization");
 	}
 	// Client: populate the grabber tank matrix with host-confirmed types. `B[0]` is the locked type, `B[1]` the count, and `B[2..]` the slots.
 	function clientFillGrabTank(types, offs, baseX, baseY) {

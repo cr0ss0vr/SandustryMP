@@ -2,6 +2,10 @@
 
 All notable changes to SandustryMP are recorded here. Dates use the ISO `YYYY-MM-DD` format.
 
+## v0.2.10 - 2026-08-25
+
+- Validate every client grabber target through the host's native restricted-zone authorization before removing an element.
+
 ## v0.2.9 - 2026-08-25
 
 - Restore player movement when another player closes the shared artefact choice window, matching the base game's native close cleanup.
