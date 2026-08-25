@@ -421,6 +421,41 @@
 		} catch (e) { setStatus(t("error", e.message), "#f66"); log("lobby loadLatestAndPlay error:", e.message); }
 	}
 
+	function saveTimestamp(save) {
+		const value = save && (save.timestamp || save.updatedAt || save.savedAt || save.time || save.date);
+		const numeric = typeof value === "number" ? value : Date.parse(value || "");
+		return Number.isFinite(numeric) ? numeric : 0;
+	}
+
+	function groupSavesByWorld(saves) {
+		const worldsById = new Map();
+		for (const save of (saves || [])) {
+			if (!save || !save.id) continue;
+			const worldId = save.worldId || (save.seed ? "seed:" + save.seed : "save:" + save.id);
+			let world = worldsById.get(worldId);
+			if (!world) {
+				world = { id: worldId, name: save.worldName || save.name || worldId, saves: [], latestTimestamp: 0 };
+				worldsById.set(worldId, world);
+			}
+			world.saves.push(save);
+			world.latestTimestamp = Math.max(world.latestTimestamp, saveTimestamp(save));
+			if (!world.name && save.worldName) world.name = save.worldName;
+		}
+		const worlds = [...worldsById.values()];
+		for (const world of worlds) world.saves.sort((a, b) => saveTimestamp(b) - saveTimestamp(a));
+		worlds.sort((a, b) => b.latestTimestamp - a.latestTimestamp || a.name.localeCompare(b.name));
+		return worlds;
+	}
+
+	async function loadSelectedSave(save) {
+		closeLobby();
+		try {
+			log("Lobby: loading selected save:", save.name || save.id);
+			const loadResult = await sandustryMP.gameApi.game.load(sandustryMP.state, save.id);
+			if (loadResult && loadResult.success === false) throw new Error(loadResult.error || "load failed");
+		} catch (error) { setStatus(t("error", error.message), "#f66"); }
+	}
+
 	function renderLobby(force) {
 		const ov = document.getElementById("smp-lobby");
 		if (!ov || !sandustryMP._lobbyOpen) return;
@@ -573,35 +608,52 @@
 					const play = lbBtn(t("lb_play_last"), t("lb_play_note"), true);
 					play.onclick = loadLatestAndPlay;
 					p.appendChild(play);
-					// selecting KONKRETNEGO save (feedback TCentraL: "maybe do: New map option, load map option")
+					// Match the native Load Game hierarchy: select a world, then one of its save instances.
 					const pick = lbBtn(t("lb_pick_save"), t("lb_pick_save_d"), false);
 					const list = document.createElement("div");
-					list.style.cssText = "display:none;max-height:180px;overflow:auto;margin:2px 0 6px;border:1px solid rgba(255,255,255,.1);border-radius:4px";
+					list.style.cssText = "display:none;height:260px;margin:2px 0 6px;border:1px solid rgba(255,255,255,.1);border-radius:4px;overflow:hidden";
 					pick.onclick = async () => {
 						if (list.style.display !== "none") { list.style.display = "none"; return; }
-						list.style.display = "block"; list.innerHTML = "";
+						list.style.display = "flex"; list.innerHTML = "";
 						try {
 							const saves = await window.electron.getSaveFiles();
-							const tsv = (s) => s.timestamp || s.updatedAt || s.savedAt || s.time || s.date || 0;
-							(saves || []).sort((a, b) => (tsv(a) < tsv(b) ? 1 : -1));
-							for (const sv of (saves || []).slice(0, 25)) {
-								const row = document.createElement("div");
-								row.style.cssText = "cursor:pointer;padding:5px 10px;border-bottom:1px solid rgba(255,255,255,.06);color:#cfe0ee;font-size:13px";
-								const tv = tsv(sv);
-								row.textContent = (sv.name || sv.id) + (tv > 1e12 ? "   ·   " + new Date(tv).toLocaleString() : "");
-								row.onmouseenter = () => { row.style.background = "#1c3850"; };
-								row.onmouseleave = () => { row.style.background = ""; };
-								row.onclick = async () => {
-									closeLobby();
-									try {
-										log("lobby: loading selected save:", sv.name || sv.id);
-										const lr = await sandustryMP.gameApi.game.load(sandustryMP.state, sv.id);
-										if (lr && lr.success === false) throw new Error(lr.error || "load failed");
-									} catch (e) { setStatus(t("error", e.message), "#f66"); }
-								};
-								list.appendChild(row);
+							const worlds = groupSavesByWorld(saves);
+							if (!worlds.length) { list.style.display = "block"; list.textContent = t("no_saves"); return; }
+							const worldPane = document.createElement("div");
+							worldPane.style.cssText = "width:38%;overflow:auto;border-right:1px solid rgba(255,255,255,.12);background:#0b1824";
+							const savePane = document.createElement("div");
+							savePane.style.cssText = "flex:1;overflow:auto;background:#0d1d2b";
+							const addHeading = (pane, text) => { const heading = document.createElement("div"); heading.textContent = text; heading.style.cssText = "position:sticky;top:0;z-index:1;padding:7px 10px;background:#09141e;color:#7d95a8;font-size:10px;font-weight:800;letter-spacing:1px"; pane.appendChild(heading); };
+							addHeading(worldPane, t("lb_worlds")); addHeading(savePane, t("lb_saves"));
+							let selectedWorldRow = null;
+							const showWorldSaves = (world, worldRow) => {
+								if (selectedWorldRow) selectedWorldRow.style.background = "";
+								selectedWorldRow = worldRow; worldRow.style.background = "#1d4a6b";
+								while (savePane.children.length > 1) savePane.removeChild(savePane.lastChild);
+								for (const save of world.saves) {
+									const saveRow = document.createElement("div");
+									saveRow.style.cssText = "cursor:pointer;padding:8px 10px;border-bottom:1px solid rgba(255,255,255,.06);color:#cfe0ee;font-size:13px";
+									const saveName = document.createElement("div"); saveName.textContent = save.name || save.id; saveName.style.cssText = "font-weight:700;color:#fff";
+									const timestamp = saveTimestamp(save);
+									const saveDetails = document.createElement("div"); saveDetails.textContent = timestamp ? new Date(timestamp).toLocaleString() : ""; saveDetails.style.cssText = "margin-top:2px;color:#7d95a8;font-size:10px";
+									saveRow.appendChild(saveName); saveRow.appendChild(saveDetails);
+									saveRow.onmouseenter = () => { saveRow.style.background = "#1c3850"; };
+									saveRow.onmouseleave = () => { saveRow.style.background = ""; };
+									saveRow.onclick = () => loadSelectedSave(save);
+									savePane.appendChild(saveRow);
+								}
+							};
+							for (const world of worlds) {
+								const worldRow = document.createElement("div");
+								worldRow.style.cssText = "cursor:pointer;padding:8px 10px;border-bottom:1px solid rgba(255,255,255,.06);font-size:12px";
+								const worldName = document.createElement("div"); worldName.textContent = world.name; worldName.style.cssText = "font-weight:700;color:#fff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
+								const saveCount = document.createElement("div"); saveCount.textContent = t("lb_save_count", world.saves.length); saveCount.style.cssText = "margin-top:2px;color:#7d95a8;font-size:10px";
+								worldRow.appendChild(worldName); worldRow.appendChild(saveCount);
+								worldRow.onclick = () => showWorldSaves(world, worldRow);
+								worldPane.appendChild(worldRow);
 							}
-							if (!list.childElementCount) list.textContent = t("no_saves");
+							list.appendChild(worldPane); list.appendChild(savePane);
+							showWorldSaves(worlds[0], worldPane.children[1]);
 						} catch (e) { list.textContent = "error: " + e.message; }
 					};
 					p.appendChild(pick); p.appendChild(list);

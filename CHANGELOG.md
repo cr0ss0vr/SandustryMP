@@ -2,6 +2,10 @@
 
 All notable changes to SandustryMP are recorded here. Dates use the ISO `YYYY-MM-DD` format.
 
+## v0.3.1 - 2026-08-25
+
+- Rebuilt the multiplayer save picker around the native world hierarchy, with worlds listed separately and every manual, automatic, and exit save available behind its world.
+
 ## v0.3.0 - 2026-08-25
 
 - Renamed LAN hosting and joining to Direct hosting and joining throughout the multiplayer interface.
