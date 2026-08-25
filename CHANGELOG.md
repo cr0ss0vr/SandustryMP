@@ -2,6 +2,11 @@
 
 All notable changes to SandustryMP are recorded here. Dates use the ISO `YYYY-MM-DD` format.
 
+## v0.3.2 - 2026-08-25
+
+- Disconnect clients from the multiplayer session whenever they return to the main menu after entering a world, preserving the exit marker across the renderer recreation performed by Sandustry and stopping before another world can be requested.
+- Send an explicit leave notification before closing the client transport so the host removes the player immediately.
+
 ## v0.3.1 - 2026-08-25
 
 - Rebuilt the multiplayer save picker around the native world hierarchy, with worlds listed separately and every manual, automatic, and exit save available behind its world.

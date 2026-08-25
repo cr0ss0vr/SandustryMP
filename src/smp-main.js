@@ -452,6 +452,14 @@ function handleIncoming(peerId, text, steamSid) {
   }
   // Ignore every non-handshake packet until the one-shot join probe is acknowledged.
   if (!peer.admitted || peer.rejected) return;
+	if (message.t === 'session-leave') {
+		log('Peer left the session explicitly:', peerId);
+		if (peer.joinTimer) clearTimeout(peer.joinTimer);
+		networkState.peers.delete(peerId);
+		if (peer.kind === 'ws') { try { peer.sock.end(); } catch (e) {} }
+		emitEvent('peer-disconnected', { id: peerId });
+		return;
+	}
 	if (peer && message.t === 'hello') {
 		const nextNick = message.nick || '?';
 		peer.nick = nextNick;
@@ -491,6 +499,11 @@ function netSend(obj, toId) {
 }
 
 function stopNetworking(reason) {
+	// Tell the authoritative host first, so it removes this player immediately instead of
+	// waiting for TCP close or the next Steam lobby membership poll.
+	if (networkState.role === 'client' && reason !== 'host-left') {
+		for (const peer of networkState.peers.values()) if (peer.admitted && !peer.rejected) sendToPeer(peer, { t: 'session-leave' });
+	}
   const mapping = networkState.upnpMapping;
   networkState.upnpMapping = null;
   if (mapping) upnp.removePortMapping(mapping)

@@ -16,7 +16,7 @@
 			window.electron && window.electron.log && window.electron.log("info", "SandustryMP:game", line);
 		} catch (e) {}
 	};
-	const VER = "v0.3.1";
+	const VER = "v0.3.2";
 	const AUTHOR = "Cr0ss0vr";
 	const CONTRIBUTORS = "";
 	const VACUUM_CAPS = [500, 1000, 1500, 2000, 2500, 3000]; // capacity table from the game code (module 6420)
@@ -4276,6 +4276,27 @@
 			}
 		}
 		if (isClientSync()) {
+			const clientScene = state.store.scene && state.store.scene.active;
+			if (clientScene !== 1) {
+				sandustryMP.wsx.wasInWorld = true;
+				try { sessionStorage.setItem("smp_client_was_in_world", "1"); } catch (e) {}
+			} else if (!sandustryMP.wsx.wasInWorld) {
+				// Returning to the title recreates the renderer, while the main-process connection survives.
+				// Restore the marker before any world request can run in this fresh renderer.
+				try { sandustryMP.wsx.wasInWorld = sessionStorage.getItem("smp_client_was_in_world") === "1"; } catch (e) {}
+			}
+			let pendingTransferLoad = false;
+			try { pendingTransferLoad = !!localStorage.getItem("smp_pending_transfer_load"); } catch (e) {}
+			if (sandustryMP.wsx.wasInWorld && clientScene === 1 && !sandustryMP._loadingWorld && !sandustryMP._finishingTransferLoad && !pendingTransferLoad) {
+				log("Client returned to the title menu; leaving the co-op session before requesting another world");
+				try { sessionStorage.removeItem("smp_client_was_in_world"); } catch (e) {}
+				profileSave(state);
+				sendPersistentPlayerStateIfDue(state, performance.now(), true);
+				setClientPaused(false);
+				try { net.stop(); } catch (e) {}
+				setStatus(t("left_to_menu"), "#fd5");
+				return;
+			}
 			// Sandustry pauses the simulation worker while saving and resumes it as
 			// soon as the save completes. A mirrored client must remain paused, so
 			// hold the worker throughout the save and reassert the pause immediately
@@ -4346,21 +4367,6 @@
 			}
 			// client FAKTYCZNIE was in the world in this session - auto-exit condition (belt and harness after
 			// instant-kick incident: everApplied set in the menu cannot disconnect)
-			if (state.store.scene && state.store.scene.active !== 1) sandustryMP.wsx.wasInWorld = true;
-			// Returning to the title menu exits the session (tony.s.jennette suggestion): after the mirror
-			// it was already working (everApplied) And the client was in the world, scene 1 means conscious exit -
-			// Disconnect cleanly instead of leaving the session in limbo. Before the first world, a client legitimately waits in the menu.
-			// !_loadingWorld: during NASZEGO FH.game.load scene flies through menu - auto-exit
-			// During this window it previously caused `net.stop()` → reconnect → transfer → load loops (ZeroHazard report).
-			if (sandustryMP.wsx.everApplied && sandustryMP.wsx.wasInWorld && !sandustryMP._loadingWorld && state.store.scene && state.store.scene.active === 1) {
-				log("Client returned to the title menu; leaving the co-op session");
-				profileSave(state); // Save legacy per-world equipment profile.
-				sendPersistentPlayerStateIfDue(state, performance.now(), true); // host-save position + hotbar checkpoint
-				setClientPaused(false);
-				try { net.stop(); } catch (e) {}
-				setStatus(t("left_to_menu"), "#fd5");
-				return; // the role is already idle - the rest of the client loop makes no sense in this frame
-			}
 			// When the client changes worlds or returns to the menu, clear tool state associated with the previous world.
 			// (fix tony: "infinite items" - old _grabTool/tank from the previous world + mouse movements = grabPlace spam)
 			const curWid = state.store.meta && state.store.meta.worldId;

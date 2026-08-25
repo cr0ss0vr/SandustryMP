@@ -72,6 +72,7 @@
 						setStatus(t("hosting_direct_local", ev.port), "#fd5");
 					} else if (ev.kind === "joined") {
 						sandustryMP.net.role = "client"; sandustryMP.net.transport = ev.transport;
+						try { sessionStorage.removeItem("smp_client_was_in_world"); } catch (e) {}
 						resetDecisionClockSession();
 						sandustryMP.wsx.everApplied = false; sandustryMP.wsx.mismatchLogged = false; sandustryMP.wsx.wasInWorld = false; // new client session
 						sandustryMP._lastAppliedSq = null; sandustryMP._lastAckT = 0; // new host numbers its batches from zero, a stale ack would be wrong
@@ -116,6 +117,7 @@
 						// Keep the client paused. Silently unpausing created a forked world where the player appeared to continue locally.
 						// locally without knowing that everything will be lost when you rejoin). Chcesz play solo → Stop.
 					} else if (ev.kind === "stopped") {
+						try { sessionStorage.removeItem("smp_client_was_in_world"); } catch (e) {}
 						if (sandustryMP.state) profileSave(sandustryMP.state); // before role reset (isClientSync still true)
 						sandustryMP.net.role = "idle"; sandustryMP.peers.clear(); removeAllPeerPuppets(); setStatus(t("offline"), "#aaa"); showInviteButton(false); sandustryMP.net.lobbyId = null; updateLobbyIdDisplay(); updatePingDisplay();
 						sandustryMP._fireQ = []; sandustryMP._cryoQ = []; sandustryMP._grabbedCells.clear(); sandustryMP._placedCells.clear(); sandustryMP._volcQ = []; sandustryMP._caulkQ = []; sandustryMP._caulkRmQ = []; sandustryMP._shakeQ = []; sandustryMP._energyToolStates = new Map(); sandustryMP._cryoIntentState = null;
