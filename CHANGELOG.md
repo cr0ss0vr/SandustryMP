@@ -2,6 +2,11 @@
 
 All notable changes to SandustryMP are recorded here. Dates use the ISO `YYYY-MM-DD` format.
 
+## v0.3.10 - 2026-08-25
+
+- Verify client-triggered story waypoints against the authoritative host objective and the client's synchronized position.
+- Complete the Stage 5 anomaly through Sandustry's native progression routine so the host advances the story and preserves the interactable state across all players.
+
 ## v0.3.9 - 2026-08-25
 
 - Preserve Sandustry's native Gold-only shaker filter when the host executes a client's placement request, restoring shaker processing.

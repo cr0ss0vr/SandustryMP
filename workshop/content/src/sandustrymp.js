@@ -16,7 +16,7 @@
 			window.electron && window.electron.log && window.electron.log("info", "SandustryMP:game", line);
 		} catch (e) {}
 	};
-	const VER = "v0.3.9";
+	const VER = "v0.3.10";
 	const AUTHOR = "Cr0ss0vr";
 	const CONTRIBUTORS = "";
 	const VACUUM_CAPS = [500, 1000, 1500, 2000, 2500, 3000]; // capacity table from the game code (module 6420)
@@ -1322,7 +1322,8 @@
 			// (storyProgression.completedSteps) and after 1 second the host overwrote it. Forward → host adds a step.
 			sandustryMP.gameApi.events.on(state, "story:stepCompleted", (st, data) => {
 				if (sandustryMP._applyingNet || sandustryMP.net.role !== "client" || !sandustryMP.wsx.paused || !data || !data.stepId) return;
-				net.send({ t: "act", k: "story", id: data.stepId });
+				const player = state.store.player || {};
+				net.send({ t: "act", k: "story", id: data.stepId, x: player.x, y: player.y });
 				log("CLIENT story step →", data.stepId);
 			});
 			// KOLEKCJE critters (fix G6): found/available/tickets live in store.creatures/conservatory,
@@ -3078,6 +3079,7 @@
 		if (["place", "sbtn", "sdata", "grabPick", "grabPlace"].includes(msg.k) && !validCoordinatePair(msg.x, msg.y)) return false;
 		if (["vac", "grabH"].includes(msg.k) && !validCoordinatePair(msg.x, msg.y)) return false;
 		if (["toolAim", "toolDig"].includes(msg.k) && (!validEnergyTool(msg.tool) || !validCoordinatePair(msg.ax, msg.ay))) return false;
+		if (msg.k === "story" && (typeof msg.id !== "string" || msg.id.length < 1 || msg.id.length > 128 || !validCoordinatePair(msg.x, msg.y))) return false;
 		if (msg.k === "toolDig" && (!Number.isInteger(msg.q) || msg.q <= 0)) return false;
 		if (msg.k === "toolStop" && !validEnergyTool(msg.tool)) return false;
 		if (msg.k === "cryoUse" && (!validCoordinatePair(msg.ax, msg.ay) || !Number.isInteger(msg.q) || msg.q <= 0)) return false;
@@ -3433,11 +3435,28 @@
 				net.send({ t: "tier", level: acceptedLevel });
 				log(acceptedLevel > previousLevel ? "HOST accepted client factory tier unlock:" : "HOST rejected client factory tier unlock; authoritative level", acceptedLevel);
 			} else if (msg.k === "story") {
-				// client plot step: add to storyProgression.completedSteps (idempotent) + re-emit
+				// Waypoint progression must run through Sandustry's native routine. Manually
+				// appending completedSteps skips current-step advancement and its side effects.
 				sandustryMP._applyingNet = true;
 				try {
+					const progression = sandustryMP.gameApi.progression;
+					const peer = sandustryMP.peers.get(fromId);
+					const currentStep = progression && progression.getCurrentStep && progression.getCurrentStep(state);
+					if (currentStep && currentStep.id === msg.id && currentStep.objective && currentStep.objective.type === "waypoint" && peer) {
+						const objectivePosition = progression.getObjectivePosition && progression.getObjectivePosition(state, currentStep.id);
+						const player = state.store.player || {};
+						const playerCenterX = peer.tx + (Number(player.width) || 0) / 2;
+						const playerCenterY = peer.ty + (Number(player.height) || 0) / 2;
+						const radius = Number(currentStep.objective.radius) || 100;
+						const withinObjective = objectivePosition && Math.hypot(playerCenterX - objectivePosition.x, playerCenterY - objectivePosition.y) <= radius;
+						const accepted = withinObjective && progression.triggerCurrentWaypoint && progression.triggerCurrentWaypoint(state) === true;
+						log(accepted ? "HOST accepted client story waypoint:" : "HOST rejected client story waypoint:", msg.id);
+						return;
+					}
+					// Retain the idempotent fallback for non-waypoint story events that have no
+					// native trigger entry point, while still requiring the host's current step.
 					const ens = (sandustryMP.gameApi.storage && sandustryMP.gameApi.storage.ensure) || findApi("ensure", ["storage"]);
-					if (ens) {
+					if (ens && currentStep && currentStep.id === msg.id) {
 						const sp = ens(state, "storyProgression");
 						const arrS = sp.completedSteps || [];
 						if (!arrS.includes(msg.id)) {
